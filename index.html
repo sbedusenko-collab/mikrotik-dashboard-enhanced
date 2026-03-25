@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MikroTik Dashboard</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --sidebar-w: 210px;
+  --bg:        #0d0e14;
+  --sidebar:   #111218;
+  --card:      #16181f;
+  --border:    #23252f;
+  --text:      #d4d8e8;
+  --muted:     #4a4f66;
+  --label:     #363a4f;
+  --accent:    #4f7fff;
+  --accent-bg: rgba(79,127,255,.12);
+  --green:     #2ecc71;
+  --red:       #e74c3c;
+  --yellow:    #f39c12;
+  --purple:    #9b59b6;
+  --cyan:      #00bcd4;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+#sidebar {
+  width: var(--sidebar-w);
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#sidebar.collapsed { width: 52px; }
+
+/* Logo */
+.sb-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 14px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sb-logo-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+  flex-shrink: 0;
+  animation: glow 2s infinite;
+}
+@keyframes glow { 0%,100%{opacity:1} 50%{opacity:.4} }
+.sb-logo-name { font-weight: 700; font-size: 14px; white-space: nowrap; }
+.sb-logo-bell {
+  margin-left: auto;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.sb-logo-bell:hover { color: var(--text); }
+
+/* Router status */
+.sb-router {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.sb-router .router-name { color: var(--text); font-weight: 500; }
+
+/* Section labels */
+.sb-section {
+  padding: 14px 14px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  color: var(--muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+}
+#sidebar.collapsed .sb-section { opacity: 0; }
+
+/* Nav items */
+.sb-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 1px 6px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background .12s, color .12s;
+  user-select: none;
+}
+.sb-item:hover { background: rgba(255,255,255,.04); color: var(--text); }
+.sb-item.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.sb-item svg { flex-shrink: 0; }
+.sb-item-label { font-size: 13px; }
+
+/* Collapse button */
+.sb-collapse {
+  margin-top: auto;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+}
+.sb-collapse:hover { color: var(--text); }
+#sidebar.collapsed .sb-collapse-label { display: none; }
+
+/* ── Main content ─────────────────────────────────────────────────────────── */
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Page header */
+#page-header {
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--sidebar);
+  flex-shrink: 0;
+}
+#page-title { font-weight: 600; font-size: 15px; }
+#page-sub   { color: var(--muted); font-size: 12px; margin-left: auto; }
+.refresh-btn {
+  background: none; border: 1px solid var(--border);
+  color: var(--muted); padding: 5px 10px;
+  border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-family: inherit;
+}
+.refresh-btn:hover { color: var(--text); border-color: var(--text); }
+
+/* Alert banner */
+#alert-banner {
+  display: none;
+  background: rgba(231,76,60,.1);
+  border-bottom: 1px solid rgba(231,76,60,.25);
+  padding: 10px 24px;
+  color: var(--red);
+  font-size: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#alert-banner.hidden { display: none; }
+
+/* Page area */
+#page-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+.page { display: none; }
+.page.active { display: block; }
+
+/* ── Cards ─────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.card-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-title span { color: var(--text); font-weight: 400; font-size: 12px; text-transform: none; letter-spacing: 0; }
+
+/* ── Grid ─────────────────────────────────────────────────────────────────── */
+.g4  { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-bottom: 16px; }
+.g2  { display: grid; grid-template-columns: repeat(2,1fr); gap: 14px; margin-bottom: 16px; }
+.g32 { display: grid; grid-template-columns: 3fr 2fr; gap: 14px; margin-bottom: 16px; }
+@media(max-width:1100px){ .g4{grid-template-columns:repeat(2,1fr)} .g32{grid-template-columns:1fr} }
+@media(max-width:700px){ .g4,.g2{grid-template-columns:1fr} }
+
+/* ── Gauge ─────────────────────────────────────────────────────────────────── */
+.gauge-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow .15s, opacity .15s, border-color .15s;
+}
+.gauge-card:active { cursor: grabbing; }
+.dnd-dragging { opacity: .35 !important; cursor: grabbing !important; }
+.iface-tile, .spark-row { cursor: grab; }
+
+.gauge-card.dragging {
+  opacity: .4;
+  box-shadow: none;
+}
+.gauge-card.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}
+.gauge-card.drag-over-left  { box-shadow: -3px 0 0 var(--accent), 0 0 0 1px var(--border); }
+.gauge-card.drag-over-right { box-shadow:  3px 0 0 var(--accent), 0 0 0 1px var(--border); }
+.gauge-ring { position: relative; width: 100px; height: 100px; }
+.gauge-ring svg { transform: rotate(-90deg); }
+.gauge-ring circle { fill: none; stroke-width: 8; stroke-linecap: round; transition: stroke-dashoffset .5s; }
+.gauge-bg    { stroke: var(--border); }
+.gauge-fill  { stroke: var(--accent); transition: stroke-dashoffset .5s ease, stroke .3s; }
+.gauge-val {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 700; line-height: 1;
+}
+.gauge-val small { font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 2px; }
+.gauge-name { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.gauge-detail { font-size: 11px; color: var(--muted); text-align: center; }
+
+/* ── Tables ─────────────────────────────────────────────────────────────────── */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th {
+  text-align: left; padding: 7px 10px;
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.tbl td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.03); font-size: 12px; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: rgba(255,255,255,.02); }
+
+/* ── Badges ─────────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-block; padding: 2px 7px;
+  border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+.b-green  { background: rgba(46,204,113,.12); color: var(--green); }
+.b-red    { background: rgba(231,76,60,.12);  color: var(--red); }
+.b-yellow { background: rgba(243,156,18,.12); color: var(--yellow); }
+.b-blue   { background: rgba(79,127,255,.15); color: var(--accent); }
+.b-purple { background: rgba(155,89,182,.12); color: var(--purple); }
+.b-cyan   { background: rgba(0,188,212,.12);  color: var(--cyan); }
+
+/* ── Interface dots ─────────────────────────────────────────────────────────── */
+.i-dot {
+  display: inline-block; width: 6px; height: 6px;
+  border-radius: 50%; margin-right: 7px; vertical-align: middle;
+}
+
+/* ── Traffic chart ─────────────────────────────────────────────────────────── */
+.iface-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; }
+.iface-tab {
+  padding: 4px 10px; border-radius: 5px;
+  border: 1px solid var(--border);
+  background: none; color: var(--muted);
+  font-family: inherit; font-size: 11px; cursor: pointer;
+  transition: all .12s;
+}
+.iface-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── Stat tiles (interfaces page) ─────────────────────────────────────────── */
+.iface-tile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.iface-tile-info { flex: 1; min-width: 0; }
+.iface-tile-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iface-tile-type { font-size: 11px; color: var(--muted); }
+.iface-tile-stats { text-align: right; flex-shrink: 0; }
+.iface-tile-stats .rx { color: var(--green); font-size: 11px; }
+.iface-tile-stats .tx { color: var(--accent); font-size: 11px; }
+
+/* ── Sparkline ─────────────────────────────────────────────────────────────── */
+.spark-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255,255,255,.03);
+}
+.spark-row:last-child { border: none; }
+.spark-name { width: 72px; font-size: 11px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; }
+.spark-canvas { flex: 1; height: 30px; }
+.spark-val { width: 100px; font-size: 10px; color: var(--muted); text-align: right; flex-shrink: 0; }
+
+/* ── WireGuard handshake colors ─────────────────────────────────────────────── */
+.hs-ok     { color: var(--green); }
+.hs-warn   { color: var(--yellow); }
+.hs-dead   { color: var(--red); }
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════ SIDEBAR ══════════════════════ -->
+<nav id="sidebar">
+  <!-- Logo -->
+  <div class="sb-logo">
+    <div class="sb-logo-dot"></div>
+    <div class="sb-logo-name">MikroTik</div>
+    <div class="sb-logo-bell">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+    </div>
+  </div>
+
+  <!-- Router info -->
+  <div class="sb-router">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="6" width="20" height="8" rx="2"/><path d="M6 10h.01M10 10h.01M18 10v.01"/><path d="M6 18h12M8 18v2M16 18v2"/></svg>
+    <div id="sb-router-name" class="router-name" style="font-size:12px">Подключение…</div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <div class="sb-section">Overview</div>
+  <div class="sb-item active" data-page="dashboard">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+    <span class="sb-item-label">Dashboard</span>
+  </div>
+
+  <!-- NETWORK -->
+  <div class="sb-section">Network</div>
+  <div class="sb-item" data-page="interfaces">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12H2M22 12h-3M12 5V2M12 22v-3"/><circle cx="12" cy="12" r="4"/><path d="M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>
+    <span class="sb-item-label">Interfaces</span>
+  </div>
+  <div class="sb-item" data-page="dhcp">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg>
+    <span class="sb-item-label">DHCP</span>
+  </div>
+  <div class="sb-item" data-page="vpn">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+    <span class="sb-item-label">VPN</span>
+  </div>
+  <div class="sb-item" data-page="routes">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M6 9v5a2 2 0 0 0 2 2h8"/></svg>
+    <span class="sb-item-label">Routes</span>
+  </div>
+
+  <!-- MONITORING -->
+  <div class="sb-section">Monitoring</div>
+  <div class="sb-item" data-page="traffic">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+    <span class="sb-item-label">Traffic</span>
+  </div>
+  <div class="sb-item" data-page="health">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+    <span class="sb-item-label">Health</span>
+  </div>
+
+  <!-- SECURITY -->
+  <div class="sb-section">Security</div>
+  <div class="sb-item" data-page="settings">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    <span class="sb-item-label">Settings</span>
+  </div>
+
+  <!-- Collapse -->
+  <div class="sb-collapse" id="collapse-btn">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+    <span class="sb-collapse-label">Collapse</span>
+  </div>
+</nav>
+
+<!-- ══════════════════════ MAIN ══════════════════════ -->
+<div id="main">
+  <!-- Page header -->
+  <div id="page-header">
+    <svg id="page-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+    <div id="page-title">Dashboard</div>
+    <div id="page-sub" style="color:var(--muted);font-size:12px;margin-left:auto" id="last-update"></div>
+    <button class="refresh-btn" onclick="refresh()">↺ Обновить</button>
+  </div>
+
+  <!-- Alert -->
+  <div id="alert-banner" class="hidden">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <span id="alert-text"></span>
+  </div>
+
+  <!-- Content -->
+  <div id="page-content">
+
+    <!-- ── Dashboard ── -->
+    <div class="page active" id="p-dashboard">
+      <div class="g4" id="gauges-row">
+        <div class="gauge-card" id="gc-cpu" draggable="true">
+          <div class="gauge-ring"><svg width="100" height="100" viewBox="0 0 100 100">
+            <circle class="gauge-bg" cx="50" cy="50" r="40" stroke-dasharray="251"/>
+            <circle class="gauge-fill" id="gf-cpu" cx="50" cy="50" r="40" stroke-dasharray="251" stroke-dashoffset="251"/>
+          </svg><div class="gauge-val"><span id="gv-cpu">–</span><small>%</small></div></div>
+          <div class="gauge-name">CPU</div>
+          <div class="gauge-detail" id="gd-cpu"> </div>
+        </div>
+        <div class="gauge-card" id="gc-mem" draggable="true">
+          <div class="gauge-ring"><svg width="100" height="100" viewBox="0 0 100 100">
+            <circle class="gauge-bg" cx="50" cy="50" r="40" stroke-dasharray="251"/>
+            <circle class="gauge-fill" id="gf-mem" cx="50" cy="50" r="40" stroke-dasharray="251" stroke-dashoffset="251" style="stroke:var(--green)"/>
+          </svg><div class="gauge-val"><span id="gv-mem">–</span><small>%</small></div></div>
+          <div class="gauge-name">Память</div>
+          <div class="gauge-detail" id="gd-mem"> </div>
+        </div>
+        <div class="gauge-card" id="gc-disk" draggable="true">
+          <div class="gauge-ring"><svg width="100" height="100" viewBox="0 0 100 100">
+            <circle class="gauge-bg" cx="50" cy="50" r="40" stroke-dasharray="251"/>
+            <circle class="gauge-fill" id="gf-disk" cx="50" cy="50" r="40" stroke-dasharray="251" stroke-dashoffset="251" style="stroke:var(--purple)"/>
+          </svg><div class="gauge-val"><span id="gv-disk">–</span><small>%</small></div></div>
+          <div class="gauge-name">Диск</div>
+          <div class="gauge-detail" id="gd-disk"> </div>
+        </div>
+        <div class="gauge-card" id="gc-temp" draggable="true">
+          <div class="gauge-ring"><svg width="100" height="100" viewBox="0 0 100 100">
+            <circle class="gauge-bg" cx="50" cy="50" r="40" stroke-dasharray="251"/>
+            <circle class="gauge-fill" id="gf-temp" cx="50" cy="50" r="40" stroke-dasharray="251" stroke-dashoffset="251" style="stroke:var(--yellow)"/>
+          </svg><div class="gauge-val"><span id="gv-temp">–</span><small>°C</small></div></div>
+          <div class="gauge-name">Температура</div>
+          <div class="gauge-detail" id="gd-temp"> </div>
+        </div>
+      </div>
+
+      <div class="g32">
+        <div class="card">
+          <div class="card-title">Трафик — <span id="dash-iface-label">ether1</span></div>
+          <div class="iface-tabs" id="dash-tabs"></div>
+          <canvas id="dash-chart" style="display:block;width:100%;height:160px"></canvas>
+        </div>
+        <div class="card" style="margin:0">
+          <div class="card-title">Интерфейсы</div>
+          <div id="dash-sparks"></div>
+        </div>
+      </div>
+
+      <div class="g2">
+        <div class="card" style="margin:0">
+          <div class="card-title">WireGuard пиры <span id="dash-vpn-count"></span></div>
+          <table class="tbl"><thead><tr>
+            <th>Адрес</th><th>Handshake</th><th>RX</th><th>TX</th><th></th>
+          </tr></thead><tbody id="dash-vpn-body"></tbody></table>
+        </div>
+        <div class="card" style="margin:0">
+          <div class="card-title">DHCP <span id="dash-dhcp-count"></span></div>
+          <table class="tbl"><thead><tr>
+            <th>IP</th><th>Hostname</th><th>MAC</th><th>Статус</th>
+          </tr></thead><tbody id="dash-dhcp-body"></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Interfaces ── -->
+    <div class="page" id="p-interfaces">
+      <div class="g4" id="iface-tiles"></div>
+      <div class="card">
+        <div class="card-title">Все интерфейсы</div>
+        <table class="tbl"><thead><tr>
+          <th>Имя</th><th>Тип</th><th>RX total</th><th>TX total</th><th>RX drop</th><th>TX drop</th><th>Статус</th>
+        </tr></thead><tbody id="iface-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── Traffic ── -->
+    <div class="page" id="p-traffic">
+      <div class="card">
+        <div class="card-title">Трафик в реальном времени — <span id="tr-label">ether1</span></div>
+        <div class="iface-tabs" id="tr-tabs"></div>
+        <canvas id="tr-chart" style="display:block;width:100%;height:200px"></canvas>
+      </div>
+      <div class="card">
+        <div class="card-title">По интерфейсам</div>
+        <div id="tr-sparks"></div>
+      </div>
+    </div>
+
+    <!-- ── DHCP ── -->
+    <div class="page" id="p-dhcp">
+      <div class="card">
+        <div class="card-title">DHCP аренды <span id="dhcp-total"></span></div>
+        <table class="tbl"><thead><tr>
+          <th>IP</th><th>MAC</th><th>Hostname</th><th>Статус</th><th>Истекает</th>
+        </tr></thead><tbody id="dhcp-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── VPN ── -->
+    <div class="page" id="p-vpn">
+      <div class="card">
+        <div class="card-title">WireGuard пиры</div>
+        <table class="tbl"><thead><tr>
+          <th>Адрес</th><th>Интерфейс</th><th>Последний handshake</th>
+          <th>RX</th><th>TX</th><th>Статус</th>
+        </tr></thead><tbody id="vpn-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── Routes ── -->
+    <div class="page" id="p-routes">
+      <div class="card">
+        <div class="card-title">Активные маршруты</div>
+        <table class="tbl"><thead><tr>
+          <th>Назначение</th><th>Gateway</th><th>Интерфейс</th><th>Distance</th>
+        </tr></thead><tbody id="routes-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── Health ── -->
+    <div class="page" id="p-health">
+      <div class="g2" id="health-grid">
+        <div class="card" style="margin:0">
+          <div class="card-title">Системные ресурсы</div>
+          <table class="tbl"><tbody id="health-sys"></tbody></table>
+        </div>
+        <div class="card" style="margin:0">
+          <div class="card-title">Сенсоры</div>
+          <table class="tbl"><tbody id="health-sensors"></tbody></table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Settings ── -->
+    <div class="page" id="p-settings">
+      <div class="card">
+        <div class="card-title">Подключение к роутеру</div>
+        <table class="tbl"><tbody id="settings-info"></tbody></table>
+      </div>
+    </div>
+
+  </div><!-- /page-content -->
+</div><!-- /main -->
+
+<script>
+// ════════════════════════════════════════════════
+// Micro chart library (no dependencies)
+// ════════════════════════════════════════════════
+class LineChart {
+  constructor(canvas, opts = {}) {
+    this.canvas = canvas;
+    this.ctx    = canvas.getContext('2d');
+    this.opts   = Object.assign({
+      bg:      '#16181f',
+      gridClr: 'rgba(255,255,255,.04)',
+      colors:  ['#2ecc71', '#4f7fff'],
+      fills:   ['rgba(46,204,113,.08)', 'rgba(79,127,255,.08)'],
+      padding: { top:8, right:4, bottom:18, left:42 },
+      maxPts:  60,
+      labels:  ['RX','TX'],
+      fmtY:    v => v,
+      tooltip: true,
+    }, opts);
+    this.series = opts.series || [Array(opts.maxPts||60).fill(0), Array(opts.maxPts||60).fill(0)];
+    this._tip = null;
+    if (opts.tooltip) this._bindTooltip();
+    this._ro = new ResizeObserver(() => this.draw());
+    this._ro.observe(canvas);
+  }
+
+  update(seriesData) {
+    this.series = seriesData;
+    this.draw();
+  }
+
+  draw() {
+    const { canvas, ctx, opts, series } = this;
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width  || canvas.parentElement?.offsetWidth || 400;
+    const H = rect.height || parseInt(canvas.style.height) || canvas.height || 160;
+    if (W < 10) return; // ещё не видим
+    canvas.width  = W * devicePixelRatio;
+    canvas.height = H * devicePixelRatio;
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+
+    const { top, right, bottom, left } = opts.padding;
+    const pw = W - left - right;
+    const ph = H - top - bottom;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = opts.bg;
+    ctx.fillRect(0, 0, W, H);
+
+    const allVals = series.flat().filter(v => isFinite(v));
+    const maxVal  = allVals.length ? Math.max(...allVals) * 1.1 || 1 : 1;
+
+    // Grid & Y labels
+    const steps = 3;
+    ctx.strokeStyle = opts.gridClr;
+    ctx.lineWidth   = 1;
+    ctx.fillStyle   = 'rgba(74,79,102,.7)';
+    ctx.font        = `${10 * devicePixelRatio / devicePixelRatio}px -apple-system,sans-serif`;
+    ctx.textAlign   = 'right';
+    for (let i = 0; i <= steps; i++) {
+      const y = top + ph - (ph * i / steps);
+      ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + pw, y); ctx.stroke();
+      ctx.fillText(opts.fmtY(maxVal * i / steps), left - 4, y + 3);
+    }
+
+    // Series
+    series.forEach((data, si) => {
+      const pts = data.slice(-opts.maxPts);
+      const n   = pts.length;
+      if (!n) return;
+
+      const x = i => left + (i / (opts.maxPts - 1)) * pw;
+      const y = v => top  + ph - (v / maxVal) * ph;
+
+      // Fill
+      ctx.beginPath();
+      pts.forEach((v, i) => i === 0 ? ctx.moveTo(x(i), y(v)) : ctx.lineTo(x(i), y(v)));
+      ctx.lineTo(x(n-1), top + ph);
+      ctx.lineTo(x(0),   top + ph);
+      ctx.closePath();
+      ctx.fillStyle = opts.fills[si];
+      ctx.fill();
+
+      // Line (smooth via bezier)
+      ctx.beginPath();
+      pts.forEach((v, i) => {
+        if (i === 0) { ctx.moveTo(x(i), y(v)); return; }
+        const px_ = x(i-1), py_ = y(pts[i-1]);
+        const cx  = x(i);
+        const cp1x = px_ + (cx - px_) * 0.5, cp1y = py_;
+        const cp2x = px_ + (cx - px_) * 0.5, cp2y = y(v);
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, cx, y(v));
+      });
+      ctx.strokeStyle = opts.colors[si];
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    });
+
+    // Tooltip crosshair
+    if (this._tip !== null) {
+      const i = this._tip;
+      const txX = left + (i / (opts.maxPts - 1)) * pw;
+      ctx.strokeStyle = 'rgba(255,255,255,.15)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(txX, top); ctx.lineTo(txX, top + ph); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  _bindTooltip() {
+    const canvas = this.canvas;
+    canvas.style.cursor = 'crosshair';
+    canvas.addEventListener('mousemove', e => {
+      const rect  = canvas.getBoundingClientRect();
+      const { left, right } = this.opts.padding;
+      const pw    = rect.width - left - right;
+      const mx    = e.clientX - rect.left - left;
+      const idx   = Math.round(mx / pw * (this.opts.maxPts - 1));
+      this._tip   = Math.max(0, Math.min(this.opts.maxPts - 1, idx));
+      this.draw();
+      this._showTip(e, idx);
+    });
+    canvas.addEventListener('mouseleave', () => { this._tip = null; this.draw(); hideTip(); });
+  }
+
+  _showTip(e, idx) {
+    let tip = document.getElementById('__chart_tip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = '__chart_tip';
+      tip.style.cssText = 'position:fixed;background:#16181f;border:1px solid #23252f;border-radius:6px;padding:6px 10px;font-size:11px;pointer-events:none;z-index:9999;white-space:nowrap;';
+      document.body.appendChild(tip);
+    }
+    const vals = this.series.map((s,i) => {
+      const v = s[s.length - (this.opts.maxPts - idx)] ?? 0;
+      return `<span style="color:${this.opts.colors[i]}">${this.opts.labels[i]}: ${this.opts.fmtY(v)}</span>`;
+    });
+    tip.innerHTML = vals.join('&nbsp;&nbsp;');
+    tip.style.left = (e.clientX + 12) + 'px';
+    tip.style.top  = (e.clientY - 20) + 'px';
+    tip.style.display = 'block';
+  }
+}
+
+function hideTip() {
+  const t = document.getElementById('__chart_tip');
+  if (t) t.style.display = 'none';
+}
+
+class SparkLine {
+  constructor(canvas, colors) {
+    this.canvas = canvas;
+    this.ctx    = canvas.getContext('2d');
+    this.colors = colors || ['#2ecc71','#4f7fff'];
+    this.series = [[], []];
+    this._ro    = new ResizeObserver(() => this.draw());
+    this._ro.observe(canvas);
+  }
+  update(s) { this.series = s; this.draw(); }
+  draw() {
+    const { canvas, ctx, colors, series } = this;
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width || canvas.parentElement?.offsetWidth || 100;
+    const H = 30;
+    if (W < 5) return;
+    canvas.width  = W * devicePixelRatio;
+    canvas.height = H * devicePixelRatio;
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    ctx.clearRect(0, 0, W, H);
+
+    const allVals = series.flat().filter(v => isFinite(v));
+    const maxVal  = Math.max(...allVals) * 1.05 || 1;
+    const n       = Math.max(...series.map(s => s.length));
+    if (!n) return;
+
+    series.forEach((data, si) => {
+      if (!data.length) return;
+      ctx.beginPath();
+      data.forEach((v, i) => {
+        const x = i / (n - 1) * W;
+        const y = H - (v / maxVal) * (H - 2) - 1;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = colors[si];
+      ctx.lineWidth   = 1.2;
+      ctx.stroke();
+    });
+  }
+}
+
+// ════════════════════════════════════════════════
+// Config
+// ════════════════════════════════════════════════
+const API = 'http://127.0.0.1:8080';
+const CIRC = 2 * Math.PI * 40; // 251
+
+// ════════════════════════════════════════════════
+// Helpers
+// ════════════════════════════════════════════════
+const fmt = b => {
+  if (b < 1e3) return b.toFixed(0) + ' B/s';
+  if (b < 1e6) return (b/1e3).toFixed(1) + ' KB/s';
+  if (b < 1e9) return (b/1e6).toFixed(2) + ' MB/s';
+  return (b/1e9).toFixed(2) + ' GB/s';
+};
+const fmtB = b => {
+  if (b < 1e3) return b + ' B';
+  if (b < 1e6) return (b/1e3).toFixed(1) + ' KB';
+  if (b < 1e9) return (b/1e6).toFixed(1) + ' MB';
+  return (b/1e9).toFixed(2) + ' GB';
+};
+const fmtMB = b => (b/1048576).toFixed(0) + ' MB';
+const el = id => document.getElementById(id);
+
+function gauge(id, pct, val, detail) {
+  const fill = el(`gf-${id}`);
+  const offset = CIRC - CIRC * Math.min(pct, 100) / 100;
+  fill.style.strokeDashoffset = offset;
+  const origColor = { cpu:'var(--accent)', mem:'var(--green)', disk:'var(--purple)', temp:'var(--yellow)' }[id];
+  fill.style.stroke = pct > 85 ? 'var(--red)' : pct > 65 ? 'var(--yellow)' : origColor;
+  el(`gv-${id}`).textContent = val;
+  if (detail !== undefined) el(`gd-${id}`).textContent = detail;
+}
+
+// ════════════════════════════════════════════════
+// Navigation
+// ════════════════════════════════════════════════
+const pages = {
+  dashboard:  { title: 'Dashboard',   sub: 'Обзор системы' },
+  interfaces: { title: 'Interfaces',  sub: 'Сетевые интерфейсы' },
+  traffic:    { title: 'Traffic',     sub: 'Мониторинг трафика в реальном времени' },
+  dhcp:       { title: 'DHCP',        sub: 'Аренды IP-адресов' },
+  vpn:        { title: 'VPN',         sub: 'WireGuard пиры' },
+  routes:     { title: 'Routes',      sub: 'Таблица маршрутизации' },
+  health:     { title: 'Health',      sub: 'Системное здоровье' },
+  settings:   { title: 'Settings',    sub: 'Конфигурация' },
+};
+let currentPage = 'dashboard';
+
+function navigate(page) {
+  currentPage = page;
+  document.querySelectorAll('.sb-item').forEach(i => {
+    i.classList.toggle('active', i.dataset.page === page);
+  });
+  document.querySelectorAll('.page').forEach(p => {
+    p.classList.toggle('active', p.id === `p-${page}`);
+  });
+  const info = pages[page] || {};
+  el('page-title').textContent = info.title || page;
+  el('page-sub').textContent = info.sub || '';
+  // Перерисовываем графики после того как страница стала видимой
+  requestAnimationFrame(() => {
+    dashChart.draw();
+    trChart.draw();
+    Object.values(sparks).forEach(s => s.draw());
+  });
+}
+
+document.querySelectorAll('.sb-item[data-page]').forEach(item => {
+  item.addEventListener('click', () => navigate(item.dataset.page));
+});
+
+// Collapse sidebar
+let collapsed = false;
+el('collapse-btn').addEventListener('click', () => {
+  collapsed = !collapsed;
+  el('sidebar').classList.toggle('collapsed', collapsed);
+  const arrow = el('collapse-btn').querySelector('svg');
+  arrow.style.transform = collapsed ? 'rotate(180deg)' : '';
+});
+
+// ════════════════════════════════════════════════
+// Charts (no dependencies)
+// ════════════════════════════════════════════════
+function makeMainChart(canvasId, height) {
+  const canvas = el(canvasId);
+  canvas.style.height = height + 'px';
+  return new LineChart(canvas, { maxPts: 60, fmtY: fmt });
+}
+
+const dashChart = makeMainChart('dash-chart', 160);
+const trChart   = makeMainChart('tr-chart',   200);
+
+function updateChart(chart, hist) {
+  if (!hist || !hist.length) return;
+  chart.update([hist.map(p => p.rx), hist.map(p => p.tx)]);
+}
+
+// Sparklines
+const sparks = {};
+function getOrCreateSpark(containerId, name) {
+  const key = containerId + name;
+  if (sparks[key]) return sparks[key];
+  const container = el(containerId);
+  const row = document.createElement('div');
+  row.className = 'spark-row';
+  row.innerHTML = `<div class="spark-name" title="${name}">${name}</div>
+    <canvas class="spark-canvas" id="spk-${containerId}-${name}"></canvas>
+    <div class="spark-val" id="spkv-${containerId}-${name}">–</div>`;
+  container.appendChild(row);
+  const canvas = row.querySelector('canvas');
+  const chart = new SparkLine(canvas);
+  sparks[key] = chart;
+  return chart;
+}
+
+function updateSpark(containerId, name, hist) {
+  if (!hist || !hist.length) return;
+  const chart = getOrCreateSpark(containerId, name);
+  chart.update([hist.map(p => p.rx), hist.map(p => p.tx)]);
+  const last  = hist.at(-1);
+  const valEl = document.getElementById(`spkv-${containerId}-${name}`);
+  if (valEl) valEl.innerHTML =
+    `<span style="color:var(--green)">↓${fmt(last.rx)}</span> <span style="color:var(--accent)">↑${fmt(last.tx)}</span>`;
+}
+
+// ════════════════════════════════════════════════
+// Iface tabs (shared state)
+// ════════════════════════════════════════════════
+let selectedIface = 'ether1';
+let knownIfaceNames = [];
+
+function buildTabs(containerId, chartObj, labelId) {
+  const container = el(containerId);
+  container.innerHTML = '';
+  knownIfaceNames.forEach(name => {
+    const b = document.createElement('button');
+    b.className = 'iface-tab' + (name === selectedIface ? ' active' : '');
+    b.textContent = name;
+    b.onclick = () => {
+      selectedIface = name;
+      document.querySelectorAll('.iface-tab').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll(`.iface-tab`).forEach(x => {
+        if (x.textContent === name) x.classList.add('active');
+      });
+      if (labelId) el(labelId).textContent = name;
+    };
+    container.appendChild(b);
+  });
+  if (labelId) el(labelId).textContent = selectedIface;
+}
+
+// ════════════════════════════════════════════════
+// Fetch & Render
+// ════════════════════════════════════════════════
+async function fetchSystem() {
+  const d = await fetch(`${API}/api/system`).then(r => r.json());
+  el('sb-router-name').textContent = `${d.identity}  ·  RouterOS ${d.version}`;
+  el('page-sub').textContent = `uptime: ${d.uptime}`;
+
+  const memPct  = Math.round((1 - d.free_memory  / d.total_memory) * 100);
+  const diskPct = Math.round((1 - d.free_hdd     / d.total_hdd)    * 100);
+  gauge('cpu',  d.cpu_load, d.cpu_load, '');
+  gauge('mem',  memPct,  memPct,  `${fmtMB(d.total_memory - d.free_memory)} / ${fmtMB(d.total_memory)}`);
+  gauge('disk', diskPct, diskPct, `${fmtMB(d.total_hdd - d.free_hdd)} / ${fmtMB(d.total_hdd)}`);
+  if (d.temperature != null)
+    gauge('temp', Math.round(d.temperature / 85 * 100), d.temperature, 'CPU temp');
+  else
+    gauge('temp', 0, '—', 'N/A');
+
+  // Settings page
+  el('settings-info').innerHTML = `
+    <tr><td style="color:var(--muted)">Роутер</td><td>${d.identity}</td></tr>
+    <tr><td style="color:var(--muted)">Модель</td><td>${d.board}</td></tr>
+    <tr><td style="color:var(--muted)">RouterOS</td><td>${d.version}</td></tr>
+    <tr><td style="color:var(--muted)">Uptime</td><td>${d.uptime}</td></tr>
+    <tr><td style="color:var(--muted)">API URL</td><td>${API}</td></tr>
+  `;
+
+  // Health page sys
+  el('health-sys').innerHTML = `
+    <tr><td style="color:var(--muted)">CPU нагрузка</td>
+      <td><span class="badge ${d.cpu_load>85?'b-red':d.cpu_load>65?'b-yellow':'b-green'}">${d.cpu_load}%</span></td></tr>
+    <tr><td style="color:var(--muted)">Память занято</td>
+      <td><span class="badge ${memPct>85?'b-red':memPct>65?'b-yellow':'b-green'}">${memPct}%</span>
+          <span style="color:var(--muted);font-size:11px;margin-left:6px">${fmtMB(d.total_memory-d.free_memory)} / ${fmtMB(d.total_memory)}</span></td></tr>
+    <tr><td style="color:var(--muted)">Диск занято</td>
+      <td><span class="badge ${diskPct>85?'b-red':diskPct>65?'b-yellow':'b-green'}">${diskPct}%</span>
+          <span style="color:var(--muted);font-size:11px;margin-left:6px">${fmtMB(d.total_hdd-d.free_hdd)} / ${fmtMB(d.total_hdd)}</span></td></tr>
+    <tr><td style="color:var(--muted)">Температура CPU</td>
+      <td>${d.temperature != null ? `<span class="badge ${d.temperature>70?'b-red':d.temperature>55?'b-yellow':'b-green'}">${d.temperature}°C</span>` : '—'}</td></tr>
+    <tr><td style="color:var(--muted)">Uptime</td><td>${d.uptime}</td></tr>
+  `;
+}
+
+async function fetchInterfaces() {
+  const list = await fetch(`${API}/api/interfaces`).then(r => r.json());
+
+  // Update known interfaces for tabs
+  const names = list.filter(i => !i.disabled).map(i => i.name);
+  if (JSON.stringify(names) !== JSON.stringify(knownIfaceNames)) {
+    knownIfaceNames = names;
+    buildTabs('dash-tabs', dashChart, 'dash-iface-label');
+    buildTabs('tr-tabs',   trChart,   'tr-label');
+  }
+
+  // Tiles (interfaces page)
+  el('iface-tiles').innerHTML = list.filter(i => !i.disabled).map(i => `
+    <div class="iface-tile" draggable="true">
+      <span class="i-dot" style="background:${i.running?'var(--green)':'var(--red)'}"></span>
+      <div class="iface-tile-info">
+        <div class="iface-tile-name">${i.name}</div>
+        <div class="iface-tile-type">${i.type}</div>
+      </div>
+      <div class="iface-tile-stats">
+        <div class="rx">↓ ${fmtB(i.rx_bytes)}</div>
+        <div class="tx">↑ ${fmtB(i.tx_bytes)}</div>
+      </div>
+    </div>
+  `).join('');
+  enableDnD('iface-tiles', '.iface-tile', false);
+
+  // Full table
+  el('iface-tbody').innerHTML = list.map(i => `
+    <tr>
+      <td><span class="i-dot" style="background:${i.disabled?'var(--border)':i.running?'var(--green)':'var(--red)'}"></span>${i.name}</td>
+      <td style="color:var(--muted)">${i.type}</td>
+      <td style="color:var(--green)">${fmtB(i.rx_bytes)}</td>
+      <td style="color:var(--accent)">${fmtB(i.tx_bytes)}</td>
+      <td style="color:var(--red)">${i.rx_drop || '0'}</td>
+      <td style="color:var(--red)">${i.tx_drop || '0'}</td>
+      <td>${i.disabled ? '<span class="badge b-yellow">disabled</span>'
+          : i.running  ? '<span class="badge b-green">up</span>'
+                       : '<span class="badge b-red">down</span>'}</td>
+    </tr>
+  `).join('');
+}
+
+async function fetchTraffic() {
+  const data = await fetch(`${API}/api/traffic`).then(r => r.json());
+
+  // Main charts
+  if (data[selectedIface]) {
+    updateChart(dashChart, data[selectedIface]);
+    updateChart(trChart,   data[selectedIface]);
+  }
+
+  // Sparklines
+  for (const [name, hist] of Object.entries(data)) {
+    if (!hist.length) continue;
+    updateSpark('dash-sparks', name, hist);
+    updateSpark('tr-sparks',   name, hist);
+  }
+  enableDnD('tr-sparks', '.spark-row', true);
+}
+
+function hsClass(hs) {
+  if (!hs) return 'hs-dead';
+  const m = hs.match(/(\d+)([smhd])/);
+  if (!m) return 'hs-ok';
+  const secs = { s:1, m:60, h:3600, d:86400 }[m[2]] * parseInt(m[1]);
+  return secs < 120 ? 'hs-ok' : secs < 3600 ? 'hs-warn' : 'hs-dead';
+}
+
+async function fetchVPN() {
+  const peers = await fetch(`${API}/api/vpn`).then(r => r.json());
+  const connected = peers.filter(p => p.connected).length;
+
+  el('dash-vpn-count').textContent = `(${connected}/${peers.length})`;
+
+  const vpnRow = p => `
+    <tr>
+      <td style="font-size:11px;font-family:monospace">${p.allowed.replace('/32','').replace(',::/0','')}</td>
+      <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${p.last_handshake || '—'}</td>
+      <td style="color:var(--green);font-size:11px">${fmtB(p.rx_bytes)}</td>
+      <td style="color:var(--accent);font-size:11px">${fmtB(p.tx_bytes)}</td>
+      <td>${p.connected ? '<span class="badge b-green">OK</span>' : '<span class="badge b-red">off</span>'}</td>
+    </tr>`;
+
+  el('dash-vpn-body').innerHTML = peers.slice(0, 8).map(vpnRow).join('');
+  el('vpn-tbody').innerHTML = peers.map(p => `
+    <tr draggable="true">
+      <td style="font-family:monospace;font-size:11px">${p.allowed.replace(',::/0','')}</td>
+      <td style="color:var(--muted)">${p.name}</td>
+      <td class="${hsClass(p.last_handshake)}">${p.last_handshake || '—'}</td>
+      <td style="color:var(--green)">${fmtB(p.rx_bytes)}</td>
+      <td style="color:var(--accent)">${fmtB(p.tx_bytes)}</td>
+      <td>${p.connected ? '<span class="badge b-green">connected</span>' : '<span class="badge b-red">offline</span>'}</td>
+    </tr>`).join('');
+  enableDnD('vpn-tbody', 'tr', true);
+}
+
+async function fetchDHCP() {
+  const list = await fetch(`${API}/api/dhcp`).then(r => r.json());
+  el('dash-dhcp-count').textContent = `(${list.length})`;
+  el('dhcp-total').textContent = `(${list.length})`;
+
+  const dhcpRow = l => `
+    <tr>
+      <td style="font-family:monospace">${l.address}</td>
+      <td>${l.hostname || '—'}</td>
+      <td style="color:var(--muted);font-size:11px">${l.mac}</td>
+      <td><span class="badge ${l.status==='bound'?'b-green':'b-blue'}">${l.status}</span></td>
+    </tr>`;
+
+  el('dash-dhcp-body').innerHTML = list.slice(0, 8).map(dhcpRow).join('');
+  el('dhcp-tbody').innerHTML = list.map(l => `
+    <tr draggable="true">
+      <td style="font-family:monospace">${l.address}</td>
+      <td style="font-size:11px">${l.mac}</td>
+      <td>${l.hostname || '—'}</td>
+      <td><span class="badge ${l.status==='bound'?'b-green':'b-blue'}">${l.status}</span></td>
+      <td style="color:var(--muted);font-size:11px">${l.expires || '—'}</td>
+    </tr>`).join('');
+  enableDnD('dhcp-tbody', 'tr', true);
+}
+
+async function fetchRoutes() {
+  const list = await fetch(`${API}/api/routes`).then(r => r.json());
+  el('routes-tbody').innerHTML = list.map(r => `
+    <tr>
+      <td style="font-family:monospace">${r.dst}</td>
+      <td style="font-family:monospace">${r.gateway || '—'}</td>
+      <td style="color:var(--muted)">${r.iface || '—'}</td>
+      <td style="color:var(--muted)">${r.distance}</td>
+    </tr>`).join('');
+}
+
+// ════════════════════════════════════════════════
+// Main refresh loop
+// ════════════════════════════════════════════════
+let errCount = 0;
+
+async function refresh() {
+  try {
+    await Promise.allSettled([
+      fetchSystem(),
+      fetchInterfaces(),
+      fetchTraffic(),
+      fetchVPN(),
+      fetchDHCP(),
+      fetchRoutes(),
+    ]);
+    errCount = 0;
+    const banner = el('alert-banner');
+    banner.classList.add('hidden');
+    el('last-update').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru');
+  } catch(e) {
+    errCount++;
+    if (errCount > 2) {
+      const banner = el('alert-banner');
+      banner.classList.remove('hidden');
+      el('alert-text').textContent = 'Ошибка соединения с сервером: ' + e.message;
+    }
+  }
+}
+
+refresh();
+setInterval(refresh, 3000);
+
+// ════════════════════════════════════════════════
+// Drag-and-drop для плиток на Dashboard
+// ════════════════════════════════════════════════
+// ════════════════════════════════════════════════
+// Универсальный drag-and-drop для динамических списков
+// ════════════════════════════════════════════════
+const _dndBound = new Set();
+
+function enableDnD(containerId, childSel, vertical) {
+  const container = el(containerId);
+  if (!container) return;
+
+  // Помечаем текущие дочерние элементы как draggable
+  container.querySelectorAll(childSel).forEach(child => {
+    child.draggable = true;
+  });
+
+  // Слушатели навешиваем только один раз
+  if (_dndBound.has(containerId)) return;
+  _dndBound.add(containerId);
+
+  let src = null;
+  const phId = '__dnd_ph_' + containerId;
+
+  function makePH(ref) {
+    const isTable = ref.tagName === 'TR';
+    const ph = document.createElement(isTable ? 'tr' : 'div');
+    ph.id = phId;
+    ph.draggable = false;
+    if (isTable) {
+      const td = document.createElement('td');
+      td.colSpan = 99;
+      td.style.cssText = 'padding:2px 0;';
+      const line = document.createElement('div');
+      line.style.cssText = 'height:2px;background:var(--accent);border-radius:2px;';
+      td.appendChild(line);
+      ph.appendChild(td);
+    } else {
+      ph.style.cssText = `
+        ${vertical
+          ? `height:${ref.offsetHeight}px;`
+          : `width:${ref.offsetWidth}px;min-height:${ref.offsetHeight}px;flex-shrink:0;`}
+        border: 2px dashed var(--accent);
+        border-radius: 8px;
+        opacity: .4;
+        background: var(--accent-bg);
+        pointer-events: none;
+      `;
+    }
+    return ph;
+  }
+
+  container.addEventListener('dragstart', e => {
+    const item = e.target.closest(childSel);
+    if (!item || !item.draggable) return;
+    src = item;
+    e.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => src && src.classList.add('dnd-dragging'), 0);
+  });
+
+  container.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (!src) return;
+    const target = e.target.closest(childSel);
+    if (!target || target === src) return;
+    let ph = document.getElementById(phId);
+    if (!ph) ph = makePH(src);
+    const rect = target.getBoundingClientRect();
+    const before = vertical
+      ? e.clientY < rect.top + rect.height / 2
+      : e.clientX < rect.left + rect.width / 2;
+    if (before) target.before(ph);
+    else target.after(ph);
+  });
+
+  container.addEventListener('dragleave', e => {
+    if (!container.contains(e.relatedTarget)) {
+      const ph = document.getElementById(phId);
+      if (ph) ph.remove();
+    }
+  });
+
+  container.addEventListener('drop', e => {
+    e.preventDefault();
+    if (!src) return;
+    const ph = document.getElementById(phId);
+    if (ph) { ph.before(src); ph.remove(); }
+    src.classList.remove('dnd-dragging');
+    src = null;
+  });
+
+  container.addEventListener('dragend', () => {
+    const ph = document.getElementById(phId);
+    if (ph) ph.remove();
+    if (src) { src.classList.remove('dnd-dragging'); src = null; }
+  });
+}
+
+(function initTileDnD() {
+  const row = el('gauges-row');
+  let dragSrc = null;
+  let placeholder = null;
+
+  function getCards() {
+    return [...row.querySelectorAll('.gauge-card')];
+  }
+
+  // Восстанавливаем сохранённый порядок
+  const saved = localStorage.getItem('gauge-order');
+  if (saved) {
+    try {
+      const ids = JSON.parse(saved);
+      ids.forEach(id => {
+        const card = row.querySelector(`#${id}`) || row.querySelector(`[data-gid="${id}"]`);
+        if (card) row.appendChild(card);
+      });
+    } catch(_) {}
+  }
+
+  // Назначаем data-gid всем картам если нет id
+  getCards().forEach((card, i) => {
+    if (!card.id) card.id = `gc-${i}`;
+  });
+
+  function saveOrder() {
+    const ids = getCards().map(c => c.id);
+    localStorage.setItem('gauge-order', JSON.stringify(ids));
+  }
+
+  function nearestCard(x) {
+    // Определяем ближайшую карту по горизонтали для вставки
+    const cards = getCards().filter(c => c !== dragSrc);
+    let best = null, bestX = Infinity;
+    for (const card of cards) {
+      const r = card.getBoundingClientRect();
+      const midX = r.left + r.width / 2;
+      if (Math.abs(x - midX) < bestX) {
+        bestX = Math.abs(x - midX);
+        best = { card, before: x < midX };
+      }
+    }
+    return best;
+  }
+
+  row.addEventListener('dragstart', e => {
+    const card = e.target.closest('.gauge-card');
+    if (!card) return;
+    dragSrc = card;
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', card.id);
+
+    // Создаём placeholder такого же размера
+    placeholder = document.createElement('div');
+    placeholder.style.cssText = `
+      width: ${card.offsetWidth}px;
+      min-height: ${card.offsetHeight}px;
+      border: 2px dashed var(--accent);
+      border-radius: 10px;
+      opacity: .4;
+      background: var(--accent-bg);
+      pointer-events: none;
+    `;
+    placeholder.id = '__dnd_placeholder';
+  });
+
+  row.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (!dragSrc) return;
+
+    const target = e.target.closest('.gauge-card');
+    const ph = el('__dnd_placeholder');
+
+    // Убираем highlight со всех
+    getCards().forEach(c => c.classList.remove('drag-over'));
+
+    if (target && target !== dragSrc) {
+      target.classList.add('drag-over');
+      const rect = target.getBoundingClientRect();
+      const before = e.clientX < rect.left + rect.width / 2;
+
+      // Перемещаем placeholder
+      if (ph) {
+        if (before) {
+          row.insertBefore(ph, target);
+        } else {
+          row.insertBefore(ph, target.nextSibling);
+        }
+      }
+    }
+  });
+
+  row.addEventListener('dragleave', e => {
+    if (!row.contains(e.relatedTarget)) {
+      getCards().forEach(c => c.classList.remove('drag-over'));
+    }
+  });
+
+  row.addEventListener('drop', e => {
+    e.preventDefault();
+    if (!dragSrc) return;
+
+    const ph = el('__dnd_placeholder');
+    if (ph) {
+      row.insertBefore(dragSrc, ph);
+      ph.remove();
+    }
+
+    getCards().forEach(c => c.classList.remove('drag-over'));
+    dragSrc.classList.remove('dragging');
+    saveOrder();
+    dragSrc = null;
+  });
+
+  row.addEventListener('dragend', () => {
+    const ph = el('__dnd_placeholder');
+    if (ph) ph.remove();
+    if (dragSrc) {
+      dragSrc.classList.remove('dragging');
+      dragSrc = null;
+    }
+    getCards().forEach(c => c.classList.remove('drag-over'));
+  });
+})();
+</script>
+</body>
+</html>
