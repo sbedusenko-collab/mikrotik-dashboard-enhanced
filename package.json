@@ -1,0 +1,17 @@
+{
+  "name": "mikrotik-dashboard",
+  "version": "1.0.0",
+  "description": "MikroTik Dashboard + MCP Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "mcp": "node mcp-server.js"
+  },
+  "keywords": [
+    "mikrotik",
+    "dashboard",
+    "mcp"
+  ],
+  "author": "",
+  "license": "ISC"
+}

@@ -10,12 +10,12 @@ const fs    = require('fs');
 
 // ── Конфигурация ──────────────────────────────────────────────────────────────
 const CFG = {
-  host:     '192.168.31.1',
-  user:     'MCP-User',
-  pass:     '1q2a3z4X!',
-  port:     8080,
-  poll:     3000,   // мс
-  history:  60,     // точек в rolling chart
+  host:     process.env.ROUTER_HOST || '192.168.31.1',
+  user:     process.env.ROUTER_USER || 'MCP-User',
+  pass:     process.env.ROUTER_PASS || '1q2a3z4X!',
+  port:     Number(process.env.PORT) || 8080,
+  poll:     Number(process.env.POLL_INTERVAL) || 3000,   // мс
+  history:  Number(process.env.HISTORY_POINTS) || 60,     // точек в rolling chart
 };
 
 const API_BASE  = `http://${CFG.host}/rest`;
@@ -118,6 +118,18 @@ async function apiRoutes() {
   }));
 }
 
+async function apiLogs() {
+  const logs = await rosGet('/log');
+  return Array.isArray(logs) ? logs.slice(-200) : [];
+}
+
+async function apiReport() {
+  const [sys, ifaces, dhcp, vpn] = await Promise.all([
+    apiSystem(), apiInterfaces(), apiDHCP(), apiVPN()
+  ]);
+  return { sys, ifaces, dhcp, vpn, timestamp: new Date().toLocaleString('ru') };
+}
+
 function apiTraffic() {
   const result = {};
   for (const [name, hist] of Object.entries(trafficHistory)) {
@@ -167,6 +179,8 @@ const ROUTES = {
   '/api/vpn':        apiVPN,
   '/api/dhcp':       apiDHCP,
   '/api/routes':     apiRoutes,
+  '/api/logs':       apiLogs,
+  '/api/report':     apiReport,
 };
 
 const server = http.createServer(async (req, res) => {

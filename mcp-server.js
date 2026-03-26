@@ -841,6 +841,26 @@ function routeros_list_alerts() {
   return store.map((a, i) => `${i + 1}. [${a.name}]  condition=${a.condition}  msg=${a.message}  created=${a.created}`).join('\n');
 }
 
+async function routeros_generate_report({ router }) {
+  const sections = [];
+  sections.push('# MikroTik Diagnostic Report');
+  sections.push(`*Generated at: ${new Date().toISOString()}*\n`);
+  
+  sections.push('## 1. System Info');
+  try { sections.push(await routeros_system_info({ router }) + '\n'); } catch(e) { sections.push(`Error: ${e.message}\n`); }
+  
+  sections.push('## 2. Health & Resources');
+  try { sections.push(await routeros_health_check({ router }) + '\n'); } catch(e) { sections.push(`Error: ${e.message}\n`); }
+  
+  sections.push('## 3. Security Audit');
+  try { sections.push(await routeros_security_audit({ router }) + '\n'); } catch(e) { sections.push(`Error: ${e.message}\n`); }
+
+  sections.push('## 4. VPN Status');
+  try { sections.push(await routeros_vpn_status({ router }) + '\n'); } catch(e) { sections.push(`Error: ${e.message}\n`); }
+
+  return sections.join('\n');
+}
+
 async function routeros_apply_template({ template, params, router }) {
   const conn = getConn(router);
   const p = params || {};
@@ -925,7 +945,7 @@ const TOOLS = {
   routeros_firmware_status, routeros_check_updates, routeros_upgrade,
   routeros_file_list, routeros_discover_network,
   routeros_drift_check, routeros_audit_log,
-  routeros_add_alert, routeros_list_alerts,
+  routeros_add_alert, routeros_list_alerts, routeros_generate_report,
   routeros_apply_template, routeros_list_templates, routeros_watch,
   routeros_open_ui,
 };
@@ -1111,6 +1131,9 @@ const TOOL_DEFS = [
   { name: 'routeros_list_alerts',
     description: 'List registered alerts.',
     inputSchema: { type: 'object', properties: {} } },
+  { name: 'routeros_generate_report',
+    description: 'Generate a comprehensive Markdown system report (system, health, security, VPN).',
+    inputSchema: { type: 'object', properties: { ...router_p } } },
   { name: 'routeros_apply_template',
     description: 'Apply a configuration template. Use routeros_list_templates to see available templates.',
     inputSchema: { type: 'object', required: ['template'],

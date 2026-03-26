@@ -406,6 +406,15 @@ body {
     <span class="sb-item-label">Settings</span>
   </div>
 
+  <div class="sb-item" data-page="logs">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M4 12h16M4 18h7"/></svg>
+    <span class="sb-item-label">Logs</span>
+  </div>
+  <div class="sb-item" data-page="report">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+    <span class="sb-item-label">Report</span>
+  </div>
+
   <!-- Collapse -->
   <div class="sb-collapse" id="collapse-btn">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -571,6 +580,24 @@ body {
       <div class="card">
         <div class="card-title">Подключение к роутеру</div>
         <table class="tbl"><tbody id="settings-info"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── Logs ── -->
+    <div class="page" id="p-logs">
+      <div class="card">
+        <div class="card-title">System Logs</div>
+        <table class="tbl"><thead><tr>
+          <th>Время</th><th>Топики</th><th>Сообщение</th>
+        </tr></thead><tbody id="logs-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- ── Report ── -->
+    <div class="page" id="p-report">
+      <div class="card">
+        <div class="card-title">Diagnostic System Report <button class="refresh-btn" style="margin-left:auto" onclick="window.print()">Print / PDF</button></div>
+        <pre id="report-content" style="font-size:13px; font-family:monospace; line-height: 1.5; white-space:pre-wrap; color:var(--text); background:transparent; padding:0; border:none;"></pre>
       </div>
     </div>
 
@@ -775,7 +802,7 @@ class SparkLine {
 // ════════════════════════════════════════════════
 // Config
 // ════════════════════════════════════════════════
-const API = 'http://127.0.0.1:8080';
+const API = '';
 const CIRC = 2 * Math.PI * 40; // 251
 
 // ════════════════════════════════════════════════
@@ -818,6 +845,8 @@ const pages = {
   routes:     { title: 'Routes',      sub: 'Таблица маршрутизации' },
   health:     { title: 'Health',      sub: 'Системное здоровье' },
   settings:   { title: 'Settings',    sub: 'Конфигурация' },
+  logs:       { title: 'System Logs', sub: 'Журнал событий RouterOS' },
+  report:     { title: 'Report',      sub: 'Сводный системный отчет' },
 };
 let currentPage = 'dashboard';
 
@@ -1100,6 +1129,52 @@ async function fetchRoutes() {
     </tr>`).join('');
 }
 
+async function fetchLogs() {
+  const list = await fetch(`${API}/api/logs`).then(r => r.json());
+  if (!list.length) { el('logs-tbody').innerHTML = '<tr><td colspan="3">No logs</td></tr>'; return; }
+  
+  el('logs-tbody').innerHTML = list.map(l => {
+    let color = 'var(--text)';
+    const t = l.topics || '';
+    if (t.includes('critical') || t.includes('error')) color = 'var(--red)';
+    else if (t.includes('warning')) color = 'var(--yellow)';
+    else if (t.includes('system') || t.includes('info')) color = 'var(--muted)';
+    return `<tr>
+      <td style="color:var(--muted);white-space:nowrap">${l.time||''}</td>
+      <td><span class="badge" style="background:none;border:1px solid var(--border);color:${color}">${t}</span></td>
+      <td style="color:${color}">${l.message||''}</td>
+    </tr>`;
+  }).reverse().join('');
+}
+
+function generateMarkdownReport(data) {
+  const { sys, ifaces, dhcp, vpn, timestamp } = data;
+  const fmtMB = b => (b/1048576).toFixed(0) + ' MB';
+  const fmtB = b => b > 1e6 ? (b/1e6).toFixed(1) + ' MB' : (b/1e3).toFixed(1) + ' KB';
+  let md = `# MikroTik Diagnostic Report\n*Generated at: ${timestamp}*\n\n`;
+  
+  md += `## 1. System Info\n- **Identity**: ${sys.identity}\n- **RouterOS**: ${sys.version}\n- **Board**: ${sys.board}\n- **Uptime**: ${sys.uptime}\n`;
+  md += `- **CPU**: ${sys.cpu_load}%\n- **Memory**: ${fmtMB(sys.total_memory - sys.free_memory)} / ${fmtMB(sys.total_memory)} USED\n- **Storage**: ${fmtMB(sys.total_hdd - sys.free_hdd)} / ${fmtMB(sys.total_hdd)} USED\n\n`;
+  
+  md += `## 2. Interfaces\n`;
+  ifaces.forEach(i => {
+    md += `- **${i.name}** (${i.type}): ${i.running ? 'UP' : 'DOWN'}${i.disabled ? ' [DISABLED]' : ''} | RX: ${fmtB(i.rx_bytes)} | TX: ${fmtB(i.tx_bytes)}\n`;
+  });
+  
+  md += `\n## 3. DHCP Leases (${dhcp.length})\n`;
+  dhcp.forEach(l => md += `- ${l.address} [${l.mac}] ${l.hostname || 'Unknown'} (${l.status})\n`);
+  
+  md += `\n## 4. VPN Peers (${vpn.length})\n`;
+  vpn.forEach(p => md += `- ${p.name} -> ${p.allowed} | Handshake: ${p.last_handshake || 'Never'} | RX: ${fmtB(p.rx_bytes)} | TX: ${fmtB(p.tx_bytes)}\n`);
+  
+  return md;
+}
+
+async function fetchReport() {
+  const data = await fetch(`${API}/api/report`).then(r => r.json());
+  el('report-content').textContent = generateMarkdownReport(data);
+}
+
 // ════════════════════════════════════════════════
 // Main refresh loop
 // ════════════════════════════════════════════════
@@ -1107,14 +1182,18 @@ let errCount = 0;
 
 async function refresh() {
   try {
-    await Promise.allSettled([
+    const promises = [
       fetchSystem(),
       fetchInterfaces(),
       fetchTraffic(),
       fetchVPN(),
       fetchDHCP(),
       fetchRoutes(),
-    ]);
+    ];
+    if (currentPage === 'logs') promises.push(fetchLogs());
+    if (currentPage === 'report') promises.push(fetchReport());
+    
+    await Promise.allSettled(promises);
     errCount = 0;
     const banner = el('alert-banner');
     banner.classList.add('hidden');
