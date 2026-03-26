@@ -183,7 +183,7 @@ const ROUTES = {
   '/api/report':     apiReport,
 };
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -225,8 +225,22 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': types[ext] || 'application/octet-stream' });
     res.end(data);
   });
-});
+};
+
+const sslKey = process.env.SSL_KEY;
+const sslCert = process.env.SSL_CERT;
+let server;
+
+if (sslKey && sslCert) {
+  server = https.createServer({
+    key: fs.readFileSync(sslKey),
+    cert: fs.readFileSync(sslCert)
+  }, requestHandler);
+} else {
+  server = http.createServer(requestHandler);
+}
 
 server.listen(CFG.port, '127.0.0.1', () => {
-  console.log(`✓ MikroTik Dashboard: http://127.0.0.1:${CFG.port}`);
+  const protocol = (sslKey && sslCert) ? 'https' : 'http';
+  console.log(`✓ MikroTik Dashboard: ${protocol}://127.0.0.1:${CFG.port}`);
 });
