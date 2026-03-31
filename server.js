@@ -8,11 +8,23 @@ const https = require('https');
 const path  = require('path');
 const fs    = require('fs');
 
+try {
+  const env = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+  env.split('\n').forEach(l => {
+    const m = l.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+  });
+} catch(e) {}
+
+if (!process.env.ROUTER_PASS) {
+  console.warn('⚠️  WARNING: ROUTER_PASS is not provided in environment or .env file. Connection will likely fail.');
+}
+
 // ── Конфигурация ──────────────────────────────────────────────────────────────
 const CFG = {
-  host:     process.env.ROUTER_HOST || '192.168.31.1',
-  user:     process.env.ROUTER_USER || 'MCP-User',
-  pass:     process.env.ROUTER_PASS || '1q2a3z4X!',
+  host:     process.env.ROUTER_HOST || '',
+  user:     process.env.ROUTER_USER || '',
+  pass:     process.env.ROUTER_PASS || '',
   port:     Number(process.env.PORT) || 8080,
   poll:     Number(process.env.POLL_INTERVAL) || 3000,   // мс
   history:  Number(process.env.HISTORY_POINTS) || 60,     // точек в rolling chart
@@ -165,7 +177,11 @@ async function pollTraffic() {
       }
       prevBytes[name] = { ts: now, rx, tx };
     }
-  } catch(_) {}
+  } catch(e) {
+    if (e.code !== 'ECONNREFUSED' && e.message !== 'timeout') {
+      console.error(`[Traffic Poll] Error: ${e.message}`);
+    }
+  }
 }
 
 setInterval(pollTraffic, CFG.poll);
@@ -185,7 +201,7 @@ const ROUTES = {
 
 const requestHandler = async (req, res) => {
   // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || `http://localhost:${CFG.port}`);
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
@@ -206,7 +222,9 @@ const requestHandler = async (req, res) => {
 
   // Статика
   const filePath = path.join(DIST_DIR, url === '/' ? 'index.html' : url);
-  if (!filePath.startsWith(DIST_DIR)) {
+  const normalizedDist = path.resolve(DIST_DIR);
+  const normalizedPath = path.resolve(filePath);
+  if (!normalizedPath.startsWith(normalizedDist)) {
     res.writeHead(403); return res.end('Forbidden');
   }
   fs.readFile(filePath, (err, data) => {

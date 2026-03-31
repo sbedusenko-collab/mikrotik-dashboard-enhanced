@@ -169,7 +169,6 @@ body {
 
 /* Alert banner */
 #alert-banner {
-  display: none;
   background: rgba(231,76,60,.1);
   border-bottom: 1px solid rgba(231,76,60,.25);
   padding: 10px 24px;
@@ -604,6 +603,7 @@ body {
   </div><!-- /page-content -->
 </div><!-- /main -->
 
+<script src="/utils.js"></script>
 <script>
 // ════════════════════════════════════════════════
 // Micro chart library (no dependencies)
@@ -808,19 +808,8 @@ const CIRC = 2 * Math.PI * 40; // 251
 // ════════════════════════════════════════════════
 // Helpers
 // ════════════════════════════════════════════════
-const fmt = b => {
-  if (b < 1e3) return b.toFixed(0) + ' B/s';
-  if (b < 1e6) return (b/1e3).toFixed(1) + ' KB/s';
-  if (b < 1e9) return (b/1e6).toFixed(2) + ' MB/s';
-  return (b/1e9).toFixed(2) + ' GB/s';
-};
-const fmtB = b => {
-  if (b < 1e3) return b + ' B';
-  if (b < 1e6) return (b/1e3).toFixed(1) + ' KB';
-  if (b < 1e9) return (b/1e6).toFixed(1) + ' MB';
-  return (b/1e9).toFixed(2) + ' GB';
-};
-const fmtMB = b => (b/1048576).toFixed(0) + ' MB';
+const fmt = window.fmtRate;
+const fmtB = window.fmtBytes;
 const el = id => document.getElementById(id);
 
 function gauge(id, pct, val, detail) {
@@ -1149,8 +1138,7 @@ async function fetchLogs() {
 
 function generateMarkdownReport(data) {
   const { sys, ifaces, dhcp, vpn, timestamp } = data;
-  const fmtMB = b => (b/1048576).toFixed(0) + ' MB';
-  const fmtB = b => b > 1e6 ? (b/1e6).toFixed(1) + ' MB' : (b/1e3).toFixed(1) + ' KB';
+  const fmtB = window.fmtBytes;
   let md = `# MikroTik Diagnostic Report\n*Generated at: ${timestamp}*\n\n`;
   
   md += `## 1. System Info\n- **Identity**: ${sys.identity}\n- **RouterOS**: ${sys.version}\n- **Board**: ${sys.board}\n- **Uptime**: ${sys.uptime}\n`;

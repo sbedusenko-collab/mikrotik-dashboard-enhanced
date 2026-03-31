@@ -11,6 +11,17 @@ const http    = require('http');
 const https   = require('https');
 const readline = require('readline');
 const { exec } = require('child_process');
+const fs      = require('fs');
+const path    = require('path');
+const { fmtBytes } = require('./utils');
+
+try {
+  const env = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+  env.split('\n').forEach(l => {
+    const m = l.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+  });
+} catch(e) {}
 
 // ── Server metadata ───────────────────────────────────────────────────────────
 const SERVER_INFO      = { name: 'mikrotik-mcp', version: '1.0.0' };
@@ -35,7 +46,7 @@ function rosRequest(conn, method, path, body) {
         'Content-Type':  'application/json',
       },
       timeout: 10000,
-      rejectUnauthorized: false,
+      rejectUnauthorized: process.env.ALLOW_INSECURE_TLS !== '1',
     };
     const bodyStr = body ? JSON.stringify(body) : null;
     if (bodyStr) opts.headers['Content-Length'] = Buffer.byteLength(bodyStr);
@@ -76,13 +87,7 @@ function getConn(router) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
-function fmtBytes(b) {
-  b = parseInt(b) || 0;
-  if (b > 1e9) return (b / 1e9).toFixed(2) + ' GB';
-  if (b > 1e6) return (b / 1e6).toFixed(2) + ' MB';
-  if (b > 1e3) return (b / 1e3).toFixed(1) + ' KB';
-  return b + ' B';
-}
+
 
 function table(rows, headers) {
   if (!rows.length) return 'No items.';
@@ -266,7 +271,7 @@ async function routeros_export({ path, router }) {
       const res  = await rosGet(conn, s);
       const list = Array.isArray(res) ? res : [res];
       if (list.length) out.push(`# ${s}\n` + JSON.stringify(list, null, 2));
-    } catch(_) {}
+    } catch(e) { process.stderr.write(`[Export] Error on ${s}: ${e.message}\n`); }
   }
   return out.join('\n\n') || 'Nothing to export.';
 }
@@ -299,7 +304,7 @@ async function routeros_traceroute({ address, router }) {
     if (Array.isArray(res)) {
       return res.map(h => `${String(h.n||h['#']||'').padStart(2)}  ${(h.address||'*').padEnd(20)}  ${h.time||'—'}ms  ${h.status||''}`.trimEnd()).join('\n');
     }
-  } catch(_) {}
+  } catch(e) { process.stderr.write(`[Traceroute] Error: ${e.message}\n`); }
   return 'Traceroute not available via REST API on this RouterOS version.';
 }
 
@@ -599,7 +604,7 @@ async function routeros_wifi_status({ router }) {
           `  ${(i.name || '').padEnd(12)}  ssid=${i.ssid || '—'}  ${i.running === 'true' ? '● up' : '○ down'}`
         ));
       }
-    } catch(_) {}
+    } catch(e) { process.stderr.write(`[WiFi 1] Error on ${p}: ${e.message}\n`); }
   }
   for (const p of ['/interface/wifi/registration-table', '/interface/wireless/registration-table']) {
     try {
@@ -610,7 +615,7 @@ async function routeros_wifi_status({ router }) {
           `  ${(c['mac-address'] || '').padEnd(18)}  iface=${c.interface || '—'}  rssi=${c['signal-strength'] || '—'}`
         ));
       }
-    } catch(_) {}
+    } catch(e) { process.stderr.write(`[WiFi 2] Error on ${p}: ${e.message}\n`); }
   }
   return lines.join('\n') || 'No WiFi interfaces found.';
 }

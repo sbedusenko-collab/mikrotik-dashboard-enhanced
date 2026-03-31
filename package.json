@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "MikroTik Dashboard + MCP Server",
   "main": "server.js",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "mcp": "node mcp-server.js"
