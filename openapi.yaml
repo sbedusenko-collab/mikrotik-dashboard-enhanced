@@ -1,0 +1,233 @@
+openapi: 3.0.3
+info:
+  title: MikroTik Dashboard API
+  description: REST API for monitoring MikroTik RouterOS devices
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local dashboard server
+
+components:
+  securitySchemes:
+    CookieAuth:
+      type: apiKey
+      in: cookie
+      name: session
+      description: Session cookie obtained from /api/login
+
+  schemas:
+    SystemInfo:
+      type: object
+      properties:
+        identity: { type: string }
+        version: { type: string }
+        board: { type: string }
+        uptime: { type: string }
+        cpu_load: { type: integer }
+        free_memory: { type: integer }
+        total_memory: { type: integer }
+        free_hdd: { type: integer }
+        total_hdd: { type: integer }
+        temperature: { type: integer, nullable: true }
+
+    Interface:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string }
+        running: { type: boolean }
+        disabled: { type: boolean }
+        rx_bytes: { type: integer }
+        tx_bytes: { type: integer }
+        rx_drop: { type: integer }
+        tx_drop: { type: integer }
+
+    TrafficPoint:
+      type: object
+      properties:
+        ts: { type: number, description: Unix timestamp }
+        rx: { type: number, description: RX rate in bytes/sec }
+        tx: { type: number, description: TX rate in bytes/sec }
+
+    VpnPeer:
+      type: object
+      properties:
+        name: { type: string }
+        allowed: { type: string }
+        last_handshake: { type: string }
+        rx_bytes: { type: integer }
+        tx_bytes: { type: integer }
+        connected: { type: boolean }
+
+    DhcpLease:
+      type: object
+      properties:
+        address: { type: string }
+        mac: { type: string }
+        hostname: { type: string }
+        status: { type: string }
+        expires: { type: string }
+
+    Route:
+      type: object
+      properties:
+        dst: { type: string }
+        gateway: { type: string }
+        iface: { type: string }
+        distance: { type: integer }
+
+    LogEntry:
+      type: object
+      properties:
+        time: { type: string }
+        topics: { type: string }
+        message: { type: string }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+security:
+  - CookieAuth: []
+
+paths:
+  /api/login:
+    post:
+      summary: Authenticate with dashboard token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        200:
+          description: Authentication successful, session cookie set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        403:
+          description: Invalid token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/system:
+    get:
+      summary: Get system information
+      responses:
+        200:
+          description: System info
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemInfo' }
+        401:
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/interfaces:
+    get:
+      summary: List all network interfaces
+      responses:
+        200:
+          description: Interface list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Interface' }
+
+  /api/traffic:
+    get:
+      summary: Get traffic history for all interfaces
+      responses:
+        200:
+          description: Traffic data keyed by interface name
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: array
+                  items: { $ref: '#/components/schemas/TrafficPoint' }
+
+  /api/vpn:
+    get:
+      summary: List WireGuard VPN peers
+      responses:
+        200:
+          description: VPN peer list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VpnPeer' }
+
+  /api/dhcp:
+    get:
+      summary: List DHCP leases
+      responses:
+        200:
+          description: DHCP lease list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DhcpLease' }
+
+  /api/routes:
+    get:
+      summary: List active routes
+      responses:
+        200:
+          description: Route table
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Route' }
+
+  /api/logs:
+    get:
+      summary: Get recent system logs (last 200 entries)
+      responses:
+        200:
+          description: Log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/LogEntry' }
+
+  /api/report:
+    get:
+      summary: Get comprehensive diagnostic report (cached for 30s)
+      responses:
+        200:
+          description: Full system report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sys: { $ref: '#/components/schemas/SystemInfo' }
+                  ifaces:
+                    type: array
+                    items: { $ref: '#/components/schemas/Interface' }
+                  dhcp:
+                    type: array
+                    items: { $ref: '#/components/schemas/DhcpLease' }
+                  vpn:
+                    type: array
+                    items: { $ref: '#/components/schemas/VpnPeer' }
+                  timestamp: { type: string }

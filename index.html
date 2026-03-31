@@ -336,6 +336,42 @@ body {
 .hs-warn   { color: var(--yellow); }
 .hs-dead   { color: var(--red); }
 
+/* ── Login overlay ─────────────────────────────────────────────────────────── */
+#login-overlay {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10000;
+}
+#login-overlay.hidden { display: none; }
+.login-box {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 36px;
+  width: 320px;
+  text-align: center;
+}
+.login-box h2 { font-size: 18px; margin-bottom: 6px; }
+.login-box p { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+.login-input {
+  width: 100%; padding: 10px 14px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text);
+  font-size: 14px; font-family: inherit;
+  outline: none; margin-bottom: 12px;
+}
+.login-input:focus { border-color: var(--accent); }
+.login-btn {
+  width: 100%; padding: 10px;
+  background: var(--accent); border: none;
+  border-radius: 8px; color: #fff;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.login-btn:hover { opacity: .9; }
+.login-err { color: var(--red); font-size: 12px; margin-top: 10px; min-height: 16px; }
+
 /* ── Scrollbar ──────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -343,6 +379,17 @@ body {
 </style>
 </head>
 <body>
+
+<!-- ══════════════════════ LOGIN OVERLAY ══════════════════════ -->
+<div id="login-overlay" class="hidden">
+  <div class="login-box">
+    <h2>MikroTik Dashboard</h2>
+    <p>Enter access token to continue</p>
+    <input type="password" class="login-input" id="login-token" placeholder="Token" autocomplete="off" />
+    <button class="login-btn" id="login-btn">Unlock</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
 
 <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
 <nav id="sidebar">
@@ -1164,6 +1211,85 @@ async function fetchReport() {
 }
 
 // ════════════════════════════════════════════════
+// Auth / Login
+// ════════════════════════════════════════════════
+async function checkAuth() {
+  try {
+    const r = await fetch(`${API}/api/system`);
+    if (r.status === 401) {
+      el('login-overlay').classList.remove('hidden');
+      return false;
+    }
+    el('login-overlay').classList.add('hidden');
+    return true;
+  } catch(e) {
+    el('login-overlay').classList.add('hidden');
+    return true;
+  }
+}
+
+el('login-btn').addEventListener('click', async () => {
+  const token = el('login-token').value.trim();
+  if (!token) return;
+  el('login-err').textContent = '';
+  try {
+    const r = await fetch(`${API}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      el('login-overlay').classList.add('hidden');
+      refresh();
+    } else {
+      el('login-err').textContent = d.error || 'Invalid token';
+    }
+  } catch(e) {
+    el('login-err').textContent = 'Connection error';
+  }
+});
+
+el('login-token').addEventListener('keydown', e => {
+  if (e.key === 'Enter') el('login-btn').click();
+});
+
+// ════════════════════════════════════════════════
+// WebSocket (real-time traffic updates)
+// ════════════════════════════════════════════════
+let ws = null;
+let wsReconnectTimer = null;
+
+function connectWs() {
+  if (ws) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'traffic') {
+        for (const [name, hist] of Object.entries(msg.data)) {
+          if (!hist.length) continue;
+          updateSpark('dash-sparks', name, hist);
+          updateSpark('tr-sparks', name, hist);
+        }
+        if (msg.data[selectedIface]) {
+          updateChart(dashChart, msg.data[selectedIface]);
+          updateChart(trChart, msg.data[selectedIface]);
+        }
+      }
+    } catch(_) {}
+  };
+  ws.onclose = () => {
+    ws = null;
+    wsReconnectTimer = setTimeout(connectWs, 3000);
+  };
+  ws.onerror = () => { ws.close(); };
+}
+
+connectWs();
+
+// ════════════════════════════════════════════════
 // Main refresh loop
 // ════════════════════════════════════════════════
 let errCount = 0;
@@ -1196,8 +1322,8 @@ async function refresh() {
   }
 }
 
-refresh();
-setInterval(refresh, 3000);
+checkAuth().then(ok => { if (ok) refresh(); });
+setInterval(() => { if (!el('login-overlay').classList.contains('hidden') === false) refresh(); }, 3000);
 
 // ════════════════════════════════════════════════
 // Drag-and-drop для плиток на Dashboard
