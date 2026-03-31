@@ -24,19 +24,22 @@
 
 **Запуск:**
 
-1. Отредактируй `server.js`:
-```js
-const CFG = {
-  host: '192.168.1.1',  // IP роутера
-  user: 'MCP-User',     // пользователь RouterOS
-  pass: 'password',     // пароль
-  port: 8080,
-};
+1. Скопируйте `.env.example` в рабочий файл `.env`:
+```bash
+cp .env.example .env
 ```
 
-2. Запусти:
+2. Отредактируйте `.env`, указав свои данные:
+```env
+ROUTER_HOST=192.168.1.1
+ROUTER_USER=MCP-User
+ROUTER_PASS=password
+PORT=8080
+```
+
+3. Запустите дашборд:
 ```bash
-node server.js
+npm start
 ```
 
 3. Открой [http://127.0.0.1:8080](http://127.0.0.1:8080)
@@ -102,5 +105,8 @@ routeros_open_ui(page="dashboard")
 mikrotik-dashboard/
 ├── server.js       # Веб-дашборд (HTTP сервер + RouterOS REST клиент)
 ├── mcp-server.js   # MCP сервер (53 инструмента, stdio JSON-RPC)
-└── index.html      # SPA фронтенд (Vanilla JS, Canvas 2D)
+├── index.html      # SPA фронтенд (Vanilla JS, Canvas 2D)
+├── utils.js        # Общие утилиты форматирования
+├── package.json    # Скрипты запуска
+└── .env.example    # Шаблон конфига
 ```
