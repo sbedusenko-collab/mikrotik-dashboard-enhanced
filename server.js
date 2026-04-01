@@ -7,28 +7,14 @@ const http  = require('http');
 const https = require('https');
 const path  = require('path');
 const fs    = require('fs');
+const crypto = require('crypto');
+const { loadEnvOnce } = require('./config');
 
-try {
-  const env = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  env.split('\n').forEach(l => {
-    const m = l.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
-  });
-} catch(e) {}
+loadEnvOnce(__dirname);
 
 if (!process.env.ROUTER_PASS) {
   console.warn('⚠️  WARNING: ROUTER_PASS is not provided in environment or .env file. Connection will likely fail.');
 }
-
-const missing = [];
-if (!process.env.ROUTER_HOST) missing.push('ROUTER_HOST');
-if (!process.env.ROUTER_USER) missing.push('ROUTER_USER');
-if (!process.env.ROUTER_PASS) missing.push('ROUTER_PASS');
-if (missing.length) {
-  console.warn(`⚠️  Missing required config: ${missing.join(', ')}. Set these in .env or environment variables.`);
-}
-
-const crypto = require('crypto');
 
 // ── Конфигурация ──────────────────────────────────────────────────────────────
 const CFG = {
@@ -39,11 +25,71 @@ const CFG = {
   poll:     Number(process.env.POLL_INTERVAL) || 3000,
   history:  Number(process.env.HISTORY_POINTS) || 60,
   auth:     process.env.DASHBOARD_TOKEN || '',
+  routerTls: process.env.ROUTER_TLS === '1',
+  allowInsecureTls: process.env.ALLOW_INSECURE_TLS === '1',
 };
+CFG.routerPort = Number(process.env.ROUTER_API_PORT) || (CFG.routerTls ? 443 : 80);
 
-const API_BASE  = `http://${CFG.host}/rest`;
-const AUTH_HDR  = 'Basic ' + Buffer.from(`${CFG.user}:${CFG.pass}`).toString('base64');
-const DIST_DIR  = path.join(__dirname);
+const missing = [];
+if (!process.env.ROUTER_HOST) missing.push('ROUTER_HOST');
+if (!process.env.ROUTER_USER) missing.push('ROUTER_USER');
+if (!process.env.ROUTER_PASS) missing.push('ROUTER_PASS');
+if (missing.length) {
+  console.warn(`⚠️  Missing required config: ${missing.join(', ')}. Set these in .env or environment variables.`);
+}
+
+const AUTH_HDR = 'Basic ' + Buffer.from(`${CFG.user}:${CFG.pass}`).toString('base64');
+const DIST_DIR = path.join(__dirname, 'public');
+
+function createRouterClient(cfg) {
+  const lib = cfg.routerTls ? https : http;
+
+  function request(method, pathname, body) {
+    return new Promise((resolve, reject) => {
+      const opts = {
+        hostname: cfg.host,
+        port: cfg.routerPort,
+        path: `/rest${pathname}`,
+        method,
+        headers: {
+          Authorization: AUTH_HDR,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        timeout: 5000,
+        rejectUnauthorized: !cfg.allowInsecureTls,
+      };
+
+      const payload = body ? JSON.stringify(body) : null;
+      if (payload) opts.headers['Content-Length'] = Buffer.byteLength(payload);
+
+      const req = lib.request(opts, res => {
+        let responseBody = '';
+        res.on('data', d => responseBody += d);
+        res.on('end', () => {
+          if (res.statusCode >= 400) {
+            return reject(new Error(`HTTP ${res.statusCode}: ${responseBody.slice(0, 200)}`));
+          }
+          try { resolve(responseBody ? JSON.parse(responseBody) : null); }
+          catch (_) { reject(new Error('JSON parse error: ' + responseBody.slice(0, 100))); }
+        });
+      });
+
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      if (payload) req.write(payload);
+      req.end();
+    });
+  }
+
+  return {
+    get(pathname) {
+      return request('GET', pathname);
+    },
+  };
+}
+
+const routerClient = createRouterClient(CFG);
 
 // ── Session store ─────────────────────────────────────────────────────────────
 const sessions = new Map();
@@ -169,31 +215,14 @@ function handleWsConnection(ws) {
 
 function broadcastUpdate(type, data) {
   if (!wsClients.size) return;
-  const msg = JSON.stringify({ type, data, ts: Date.now() });
   for (const ws of wsClients) {
     wsSend(ws, { type, data, ts: Date.now() });
   }
 }
 
 // ── RouterOS REST helper ──────────────────────────────────────────────────────
-function rosGet(path) {
-  return new Promise((resolve, reject) => {
-    const url = `${API_BASE}${path}`;
-    const opts = {
-      headers: { Authorization: AUTH_HDR, Accept: 'application/json' },
-      timeout: 5000,
-    };
-    http.get(url, opts, res => {
-      let body = '';
-      res.on('data', d => body += d);
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch(e) { reject(new Error('JSON parse error: ' + body.slice(0, 100))); }
-      });
-    }).on('error', reject).on('timeout', function() {
-      this.destroy(new Error('timeout'));
-    });
-  });
+function rosGet(pathname) {
+  return routerClient.get(pathname);
 }
 
 // ── API handlers ──────────────────────────────────────────────────────────────
@@ -275,6 +304,18 @@ async function apiLogs() {
 // ── Report cache ──────────────────────────────────────────────────────────────
 let reportCache = null;
 const REPORT_CACHE_TTL = 30 * 1000;
+const SHORT_CACHE_TTL = 2000;
+const shortCache = new Map();
+
+function withShortCache(key, fn, ttl = SHORT_CACHE_TTL) {
+  return async () => {
+    const cached = shortCache.get(key);
+    if (cached && Date.now() - cached.ts < ttl) return cached.data;
+    const data = await fn();
+    shortCache.set(key, { ts: Date.now(), data });
+    return data;
+  };
+}
 
 async function apiReport() {
   if (reportCache && Date.now() - reportCache.ts < REPORT_CACHE_TTL) {
@@ -283,9 +324,60 @@ async function apiReport() {
   const [sys, ifaces, dhcp, vpn] = await Promise.all([
     apiSystem(), apiInterfaces(), apiDHCP(), apiVPN()
   ]);
-  const data = { sys, ifaces, dhcp, vpn, timestamp: new Date().toLocaleString('ru') };
+  const data = { sys, ifaces, dhcp, vpn, timestamp: new Date().toLocaleString('ru-RU') };
   reportCache = { data, ts: Date.now() };
   return data;
+}
+
+async function apiHealthSummary() {
+  try {
+    const sys = await apiSystem();
+    const pct = (used, total) => total > 0 ? (used / total) * 100 : 0;
+    const memoryUsedPct = pct(sys.total_memory - sys.free_memory, sys.total_memory);
+    const diskUsedPct = pct(sys.total_hdd - sys.free_hdd, sys.total_hdd);
+    const temp = Number(sys.temperature);
+
+    const checks = {
+      cpu: { value: sys.cpu_load, status: sys.cpu_load > 85 ? 'critical' : (sys.cpu_load > 70 ? 'warning' : 'ok') },
+      memory: { value: Number(memoryUsedPct.toFixed(1)), status: memoryUsedPct > 90 ? 'critical' : (memoryUsedPct > 80 ? 'warning' : 'ok') },
+      disk: { value: Number(diskUsedPct.toFixed(1)), status: diskUsedPct > 95 ? 'critical' : (diskUsedPct > 85 ? 'warning' : 'ok') },
+      temp: { value: Number.isFinite(temp) ? temp : null, status: !Number.isFinite(temp) ? 'unknown' : (temp > 75 ? 'critical' : (temp > 65 ? 'warning' : 'ok')) },
+    };
+
+    const alerts = [];
+    if (checks.cpu.status !== 'ok') alerts.push(`CPU load ${checks.cpu.value}%`);
+    if (checks.memory.status !== 'ok') alerts.push(`Memory used ${checks.memory.value}%`);
+    if (checks.disk.status !== 'ok') alerts.push(`Disk used ${checks.disk.value}%`);
+    if (checks.temp.status === 'critical') alerts.push(`Temperature ${checks.temp.value}°C`);
+    if (checks.temp.status === 'warning') alerts.push(`Temperature high ${checks.temp.value}°C`);
+
+    const severity = ['critical', 'warning', 'ok'].find(s =>
+      Object.values(checks).some(c => c.status === s)
+    ) || 'unknown';
+
+    return {
+      reachable: true,
+      severity,
+      alerts,
+      checks,
+      identity: sys.identity,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (e) {
+    return {
+      reachable: false,
+      severity: 'critical',
+      alerts: ['Router unreachable'],
+      error: e.message,
+      checks: {
+        cpu: { status: 'unknown', value: null },
+        memory: { status: 'unknown', value: null },
+        disk: { status: 'unknown', value: null },
+        temp: { status: 'unknown', value: null },
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
 }
 
 function apiTraffic() {
@@ -341,14 +433,15 @@ pollTraffic();
 
 // ── HTTP сервер ───────────────────────────────────────────────────────────────
 const ROUTES = {
-  '/api/system':     apiSystem,
-  '/api/interfaces': apiInterfaces,
+  '/api/system':     withShortCache('system', apiSystem),
+  '/api/interfaces': withShortCache('interfaces', apiInterfaces),
   '/api/traffic':    () => Promise.resolve(apiTraffic()),
-  '/api/vpn':        apiVPN,
-  '/api/dhcp':       apiDHCP,
-  '/api/routes':     apiRoutes,
+  '/api/vpn':        withShortCache('vpn', apiVPN),
+  '/api/dhcp':       withShortCache('dhcp', apiDHCP),
+  '/api/routes':     withShortCache('routes', apiRoutes),
   '/api/logs':       apiLogs,
   '/api/report':     apiReport,
+  '/api/health-summary': apiHealthSummary,
 };
 
 function setSecurityHeaders(res) {
@@ -359,6 +452,12 @@ function setSecurityHeaders(res) {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   if (sslKey && sslCert) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'");
+}
+
+function isForbiddenStaticPath(urlPath) {
+  const baseName = path.basename(urlPath || '');
+  if (baseName.startsWith('.')) return true;
+  return ['.env', '.pem', '.key', '.crt'].includes(baseName.toLowerCase());
 }
 
 function logAccess(req, statusCode) {
@@ -384,7 +483,13 @@ const requestHandler = async (req, res) => {
   }
 
   // CORS
-  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || `http://localhost:${CFG.port}`);
+  const allowedOrigin = process.env.CORS_ORIGIN || `http://localhost:${CFG.port}`;
+  const reqOrigin = req.headers.origin;
+  if (reqOrigin && reqOrigin === allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
@@ -400,9 +505,17 @@ const requestHandler = async (req, res) => {
         const { token } = JSON.parse(body);
         if (token === CFG.auth) {
           const session = createSession();
+          const cookieFlags = [
+            `session=${session}`,
+            'HttpOnly',
+            'SameSite=Strict',
+            `Max-Age=${SESSION_TTL / 1000}`,
+            'Path=/',
+          ];
+          if (sslKey && sslCert) cookieFlags.push('Secure');
           res.writeHead(200, {
             'Content-Type': 'application/json',
-            'Set-Cookie': `session=${session}; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL / 1000}; Path=/`,
+            'Set-Cookie': cookieFlags.join('; '),
           });
           logAccess(req, 200);
           res.end(JSON.stringify({ ok: true }));
@@ -447,6 +560,9 @@ const requestHandler = async (req, res) => {
   if (!normalizedPath.startsWith(normalizedDist + path.sep) && normalizedPath !== normalizedDist) {
     res.writeHead(403); logAccess(req, 403); return res.end('Forbidden');
   }
+  if (isForbiddenStaticPath(url)) {
+    res.writeHead(403); logAccess(req, 403); return res.end('Forbidden');
+  }
   fs.readFile(filePath, (err, data) => {
     if (err) {
       fs.readFile(path.join(DIST_DIR, 'index.html'), (e2, d2) => {
@@ -480,6 +596,14 @@ if (sslKey && sslCert) {
 }
 
 server.on('upgrade', (req, socket) => {
+  if (CFG.auth) {
+    const cookies = parseCookies(req);
+    if (!validateSession(cookies.session)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
   if (req.headers.upgrade !== 'websocket') { socket.destroy(); return; }
   const handshake = wsAccept(req);
   if (!handshake) { socket.destroy(); return; }
@@ -488,9 +612,12 @@ server.on('upgrade', (req, socket) => {
   handleWsConnection(socket);
 });
 
-server.listen(CFG.port, '127.0.0.1', () => {
+const listenHost = process.env.HOST || '127.0.0.1';
+server.listen(CFG.port, listenHost, () => {
   const protocol = (sslKey && sslCert) ? 'https' : 'http';
-  console.log(`✓ MikroTik Dashboard: ${protocol}://127.0.0.1:${CFG.port}`);
+  const routerProto = CFG.routerTls ? 'https' : 'http';
+  console.log(`✓ MikroTik Dashboard: ${protocol}://${listenHost}:${CFG.port}`);
+  console.log(`✓ RouterOS REST target: ${routerProto}://${CFG.host}:${CFG.routerPort}/rest`);
 });
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
