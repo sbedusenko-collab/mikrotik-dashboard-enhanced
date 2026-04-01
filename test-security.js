@@ -8,21 +8,9 @@ const { escapeHtml } = require('./utils');
 const { previewDestructive } = require('./routeros-tools-security');
 const { buildUiUrl } = require('./routeros-tools-mcp');
 const { loadEnvOnce } = require('./config');
+const { createAsserts } = require('./test-helpers');
 
-let passed = 0;
-let failed = 0;
-
-function assertEq(a, b, msg) {
-  if (a === b) { passed++; return; }
-  failed++;
-  console.error(`✗ ${msg}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
-}
-
-function assert(cond, msg) {
-  if (cond) { passed++; return; }
-  failed++;
-  console.error(`✗ ${msg}`);
-}
+const { assert, assertEq, stats } = createAsserts();
 
 const escaped = escapeHtml(`<script>alert("x")</script> & 'x'`);
 assertEq(escaped, '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;x&#39;', 'escapeHtml escapes HTML');
@@ -66,5 +54,6 @@ if (start !== -1 && end !== -1) {
   assert(typeof text === 'string' && text.includes('MikroTik Diagnostic Report'), 'generateMarkdownReport smoke');
 }
 
-console.log(`Results: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+const s = stats();
+console.log(`Results: ${s.passed} passed, ${s.failed} failed`);
+process.exit(s.failed > 0 ? 1 : 0);

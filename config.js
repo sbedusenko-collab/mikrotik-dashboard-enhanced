@@ -34,7 +34,7 @@ function loadEnvOnce(dir) {
     env.split('\n').forEach((line) => {
       const src = line.replace(/^\uFEFF/, '').trim();
       if (!src || src.startsWith('#')) return;
-      const m = src.match(/^\s*(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/);
+      const m = src.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
       if (!m) return;
       if (!process.env[m[1]]) process.env[m[1]] = parseValue(m[2]);
     });

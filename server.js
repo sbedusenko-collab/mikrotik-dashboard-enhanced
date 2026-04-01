@@ -138,6 +138,7 @@ const prevBytes      = {};   // name → {ts,rx,tx}
 
 // ── WebSocket (zero-dependency, RFC 6455) ─────────────────────────────────────
 const wsClients = new Set();
+const serverMetrics = { requests: 0, errors: 0, byStatus: {} };
 
 function wsAccept(req) {
   const key = req.headers['sec-websocket-key'];
@@ -171,7 +172,11 @@ function wsSend(ws, obj) {
     frame.writeBigUInt64BE(BigInt(len), 2);
     data.copy(frame, 10);
   }
-  try { ws.write(frame); } catch(_) {}
+  try { ws.write(frame); } catch (e) {
+    if (e?.code === 'EPIPE' || e?.code === 'ECONNRESET') {
+      console.warn(`[WS] write failed: ${e.code}`);
+    }
+  }
 }
 
 function handleWsConnection(ws) {
@@ -347,7 +352,7 @@ async function apiHealthSummary() {
 
     const severity = ['critical', 'warning', 'ok'].find(s =>
       Object.values(checks).some(c => c.status === s)
-    ) || 'unknown';
+    );
 
     return {
       reachable: true,
@@ -406,7 +411,7 @@ async function pollTraffic() {
           const txRate = Math.max(0, (tx - prev.tx) / dt);
           if (!trafficHistory[name]) trafficHistory[name] = [];
           trafficHistory[name].push({ ts: now, rx: rxRate, tx: txRate });
-          if (trafficHistory[name].length > CFG.history * 2)
+          if (trafficHistory[name].length > CFG.history)
             trafficHistory[name] = trafficHistory[name].slice(-CFG.history);
         }
       }
@@ -427,6 +432,8 @@ pollTraffic();
 
 // ── HTTP сервер ───────────────────────────────────────────────────────────────
 const ROUTES = {
+  '/api/health':     () => Promise.resolve({ ok: true, ts: new Date().toISOString() }),
+  '/api/metrics':    () => Promise.resolve({ ...serverMetrics, uptime_sec: Math.round(process.uptime()) }),
   '/api/system':     withShortCache('system', apiSystem),
   '/api/interfaces': withShortCache('interfaces', apiInterfaces),
   '/api/traffic':    () => Promise.resolve(apiTraffic()),
@@ -434,7 +441,7 @@ const ROUTES = {
   '/api/dhcp':       withShortCache('dhcp', apiDHCP),
   '/api/routes':     withShortCache('routes', apiRoutes),
   '/api/logs':       apiLogs,
-  '/api/report':     apiReport,
+  '/api/report':     withShortCache('report', apiReport),
   '/api/health-summary': withShortCache('health-summary', apiHealthSummary),
 };
 
@@ -459,6 +466,9 @@ function logAccess(req, statusCode) {
   const url = req.url || '-';
   const ip = getClientIp(req);
   const time = new Date().toISOString();
+  serverMetrics.requests += 1;
+  serverMetrics.byStatus[statusCode] = (serverMetrics.byStatus[statusCode] || 0) + 1;
+  if (statusCode >= 400) serverMetrics.errors += 1;
   console.log(`${ip} - [${time}] "${method} ${url}" ${statusCode}`);
 }
 
@@ -540,7 +550,7 @@ const requestHandler = async (req, res) => {
   }
 
   // Check if auth is required
-  if (CFG.auth && url.startsWith('/api/') && url !== '/api/login' && url !== '/api/logout') {
+  if (CFG.auth && url.startsWith('/api/') && !['/api/login', '/api/logout', '/api/health'].includes(url)) {
     if (!checkAuth(req, res)) { logAccess(req, 401); return; }
   }
 
@@ -608,7 +618,7 @@ if (sslKey && sslCert) {
 }
 
 server.on('upgrade', (req, socket) => {
-  const allowedOrigin = process.env.CORS_ORIGIN || `${(sslKey && sslCert) ? 'https' : 'http'}://${process.env.HOST || '127.0.0.1'}:${CFG.port}`;
+  const allowedOrigin = process.env.CORS_ORIGIN || `${listenProtocol}://${listenHost}:${CFG.port}`;
   const reqOrigin = req.headers.origin;
   if (reqOrigin && reqOrigin !== allowedOrigin) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
@@ -632,10 +642,10 @@ server.on('upgrade', (req, socket) => {
 });
 
 const listenHost = process.env.HOST || '127.0.0.1';
+const listenProtocol = (sslKey && sslCert) ? 'https' : 'http';
 server.listen(CFG.port, listenHost, () => {
-  const protocol = (sslKey && sslCert) ? 'https' : 'http';
   const routerProto = CFG.routerTls ? 'https' : 'http';
-  console.log(`✓ MikroTik Dashboard: ${protocol}://${listenHost}:${CFG.port}`);
+  console.log(`✓ MikroTik Dashboard: ${listenProtocol}://${listenHost}:${CFG.port}`);
   console.log(`✓ RouterOS REST target: ${routerProto}://${CFG.host}:${CFG.routerPort}/rest`);
 });
 

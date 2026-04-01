@@ -4,24 +4,13 @@
  * Run: node test.js
  */
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, msg) {
-  if (condition) { passed++; return; }
-  failed++;
-  console.error(`  ✗ ${msg}`);
-}
-
-function assertEq(a, b, msg) {
-  if (a === b) { passed++; return; }
-  failed++;
-  console.error(`  ✗ ${msg} — expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
-}
+const { createAsserts } = require('./test-helpers');
+const { assert, assertEq, stats } = createAsserts();
+let caseFailures = 0;
 
 function test(name, fn) {
   try { fn(); console.log(`  ✓ ${name}`); }
-  catch(e) { failed++; console.error(`  ✗ ${name}: ${e.message}`); }
+  catch(e) { caseFailures++; console.error(`  ✗ ${name}: ${e.message}`); }
 }
 
 // ── Helpers (inline copies to test logic without requiring server.js) ──────────
@@ -134,6 +123,8 @@ test('report cache TTL is 30 seconds', () => {
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 
+const s = stats();
+const failed = s.failed + caseFailures;
 console.log(`\n${'─'.repeat(40)}`);
-console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
+console.log(`Results: ${s.passed} passed, ${failed} failed, ${s.passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
