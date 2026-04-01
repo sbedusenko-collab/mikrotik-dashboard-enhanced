@@ -187,6 +187,13 @@
       <div class="g4" id="iface-tiles"></div>
       <div class="card">
         <div class="card-title">Все интерфейсы</div>
+        <div style="margin-bottom:10px">
+          <select id="iface-filter" class="refresh-btn">
+            <option value="all">Все</option>
+            <option value="up">Только UP</option>
+            <option value="down">Только DOWN</option>
+          </select>
+        </div>
         <table class="tbl"><thead><tr>
           <th>Имя</th><th>Тип</th><th>RX total</th><th>TX total</th><th>RX drop</th><th>TX drop</th><th>Статус</th>
         </tr></thead><tbody id="iface-tbody"></tbody></table>
@@ -210,6 +217,9 @@
     <div class="page" id="p-dhcp">
       <div class="card">
         <div class="card-title">DHCP аренды <span id="dhcp-total"></span></div>
+        <div style="margin-bottom:10px">
+          <input id="dhcp-search" class="refresh-btn" style="width:280px" placeholder="Поиск по IP / MAC / hostname">
+        </div>
         <table class="tbl"><thead><tr>
           <th>IP</th><th>MAC</th><th>Hostname</th><th>Статус</th><th>Истекает</th>
         </tr></thead><tbody id="dhcp-tbody"></tbody></table>
@@ -263,6 +273,9 @@
     <div class="page" id="p-logs">
       <div class="card">
         <div class="card-title">System Logs</div>
+        <div style="margin-bottom:10px">
+          <input id="logs-filter" class="refresh-btn" style="width:280px" placeholder="Фильтр по тексту/топику">
+        </div>
         <table class="tbl"><thead><tr>
           <th>Время</th><th>Топики</th><th>Сообщение</th>
         </tr></thead><tbody id="logs-tbody"></tbody></table>

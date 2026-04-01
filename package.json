@@ -10,6 +10,7 @@
     "start": "node server.js",
     "mcp": "node mcp-server.js",
     "test": "node test.js",
+    "test:security": "node test-security.js",
     "lint": "node --check server.js && node --check mcp-server.js && node --check utils.js",
     "dev": "node server.js"
   },

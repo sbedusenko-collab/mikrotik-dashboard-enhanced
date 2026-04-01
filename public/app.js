@@ -197,6 +197,8 @@ class SparkLine {
 // ════════════════════════════════════════════════
 const API = '';
 const CIRC = 2 * Math.PI * 40; // 251
+let refreshAbortController = null;
+let activeRefreshSignal = null;
 
 // ════════════════════════════════════════════════
 // Helpers
@@ -205,6 +207,10 @@ const fmt = window.fmtRate;
 const fmtB = window.fmtBytes;
 const el = id => document.getElementById(id);
 const escapeHtml = window.escapeHtml || (s => String(s ?? ''));
+async function apiJson(path) {
+  const res = await fetch(`${API}${path}`, { signal: activeRefreshSignal || undefined });
+  return res.json();
+}
 
 function gauge(id, pct, val, detail) {
   const fill = el(`gf-${id}`);
@@ -344,7 +350,7 @@ function buildTabs(containerId, chartObj, labelId) {
 // Fetch & Render
 // ════════════════════════════════════════════════
 async function fetchSystem() {
-  const d = await fetch(`${API}/api/system`).then(r => r.json());
+  const d = await apiJson('/api/system');
   el('sb-router-name').textContent = `${d.identity}  ·  RouterOS ${d.version}`;
   el('page-sub').textContent = `uptime: ${d.uptime}`;
 
@@ -360,10 +366,10 @@ async function fetchSystem() {
 
   // Settings page
   el('settings-info').innerHTML = `
-    <tr><td style="color:var(--muted)">Роутер</td><td>${d.identity}</td></tr>
-    <tr><td style="color:var(--muted)">Модель</td><td>${d.board}</td></tr>
-    <tr><td style="color:var(--muted)">RouterOS</td><td>${d.version}</td></tr>
-    <tr><td style="color:var(--muted)">Uptime</td><td>${d.uptime}</td></tr>
+    <tr><td style="color:var(--muted)">Роутер</td><td>${escapeHtml(d.identity)}</td></tr>
+    <tr><td style="color:var(--muted)">Модель</td><td>${escapeHtml(d.board)}</td></tr>
+    <tr><td style="color:var(--muted)">RouterOS</td><td>${escapeHtml(d.version)}</td></tr>
+    <tr><td style="color:var(--muted)">Uptime</td><td>${escapeHtml(d.uptime)}</td></tr>
     <tr><td style="color:var(--muted)">API URL</td><td>${API}</td></tr>
   `;
 
@@ -379,15 +385,21 @@ async function fetchSystem() {
           <span style="color:var(--muted);font-size:11px;margin-left:6px">${fmtMB(d.total_hdd-d.free_hdd)} / ${fmtMB(d.total_hdd)}</span></td></tr>
     <tr><td style="color:var(--muted)">Температура CPU</td>
       <td>${d.temperature != null ? `<span class="badge ${d.temperature>70?'b-red':d.temperature>55?'b-yellow':'b-green'}">${d.temperature}°C</span>` : '—'}</td></tr>
-    <tr><td style="color:var(--muted)">Uptime</td><td>${d.uptime}</td></tr>
+    <tr><td style="color:var(--muted)">Uptime</td><td>${escapeHtml(d.uptime)}</td></tr>
   `;
 }
 
 async function fetchInterfaces() {
-  const list = await fetch(`${API}/api/interfaces`).then(r => r.json());
+  const list = await apiJson('/api/interfaces');
+  const ifaceFilter = el('iface-filter')?.value || 'all';
+  const visible = list.filter(i => {
+    if (ifaceFilter === 'up') return i.running && !i.disabled;
+    if (ifaceFilter === 'down') return !i.running || i.disabled;
+    return true;
+  });
 
   // Update known interfaces for tabs
-  const names = list.filter(i => !i.disabled).map(i => i.name);
+  const names = visible.filter(i => !i.disabled).map(i => i.name);
   if (JSON.stringify(names) !== JSON.stringify(knownIfaceNames)) {
     knownIfaceNames = names;
     buildTabs('dash-tabs', dashChart, 'dash-iface-label');
@@ -395,7 +407,7 @@ async function fetchInterfaces() {
   }
 
   // Tiles (interfaces page)
-  el('iface-tiles').innerHTML = list.filter(i => !i.disabled).map(i => `
+  el('iface-tiles').innerHTML = visible.filter(i => !i.disabled).map(i => `
     <div class="iface-tile" draggable="true">
       <span class="i-dot" style="background:${i.running?'var(--green)':'var(--red)'}"></span>
       <div class="iface-tile-info">
@@ -411,7 +423,7 @@ async function fetchInterfaces() {
   enableDnD('iface-tiles', '.iface-tile', false);
 
   // Full table
-  el('iface-tbody').innerHTML = list.map(i => `
+  el('iface-tbody').innerHTML = visible.map(i => `
     <tr>
       <td><span class="i-dot" style="background:${i.disabled?'var(--border)':i.running?'var(--green)':'var(--red)'}"></span>${escapeHtml(i.name)}</td>
       <td style="color:var(--muted)">${escapeHtml(i.type)}</td>
@@ -427,7 +439,7 @@ async function fetchInterfaces() {
 }
 
 async function fetchTraffic() {
-  const data = await fetch(`${API}/api/traffic`).then(r => r.json());
+  const data = await apiJson('/api/traffic');
 
   // Main charts
   if (data[selectedIface]) {
@@ -453,15 +465,15 @@ function hsClass(hs) {
 }
 
 async function fetchVPN() {
-  const peers = await fetch(`${API}/api/vpn`).then(r => r.json());
+  const peers = await apiJson('/api/vpn');
   const connected = peers.filter(p => p.connected).length;
 
   el('dash-vpn-count').textContent = `(${connected}/${peers.length})`;
 
   const vpnRow = p => `
     <tr>
-      <td style="font-size:11px;font-family:monospace">${p.allowed.replace('/32','').replace(',::/0','')}</td>
-      <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${p.last_handshake || '—'}</td>
+      <td style="font-size:11px;font-family:monospace">${escapeHtml((p.allowed || '').replace('/32','').replace(',::/0',''))}</td>
+      <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${escapeHtml(p.last_handshake || '—')}</td>
       <td style="color:var(--green);font-size:11px">${fmtB(p.rx_bytes)}</td>
       <td style="color:var(--accent);font-size:11px">${fmtB(p.tx_bytes)}</td>
       <td>${p.connected ? '<span class="badge b-green">OK</span>' : '<span class="badge b-red">off</span>'}</td>
@@ -481,9 +493,15 @@ async function fetchVPN() {
 }
 
 async function fetchDHCP() {
-  const list = await fetch(`${API}/api/dhcp`).then(r => r.json());
-  el('dash-dhcp-count').textContent = `(${list.length})`;
-  el('dhcp-total').textContent = `(${list.length})`;
+  const list = await apiJson('/api/dhcp');
+  const q = (el('dhcp-search')?.value || '').trim().toLowerCase();
+  const filtered = q ? list.filter(l =>
+    String(l.address || '').toLowerCase().includes(q) ||
+    String(l.mac || '').toLowerCase().includes(q) ||
+    String(l.hostname || '').toLowerCase().includes(q)
+  ) : list;
+  el('dash-dhcp-count').textContent = `(${filtered.length})`;
+  el('dhcp-total').textContent = `(${filtered.length})`;
 
   const dhcpRow = l => `
     <tr>
@@ -493,8 +511,8 @@ async function fetchDHCP() {
       <td><span class="badge ${l.status==='bound'?'b-green':'b-blue'}">${l.status}</span></td>
     </tr>`;
 
-  el('dash-dhcp-body').innerHTML = list.slice(0, 8).map(dhcpRow).join('');
-  el('dhcp-tbody').innerHTML = list.map(l => `
+  el('dash-dhcp-body').innerHTML = filtered.slice(0, 8).map(dhcpRow).join('');
+  el('dhcp-tbody').innerHTML = filtered.map(l => `
     <tr draggable="true">
       <td style="font-family:monospace">${l.address}</td>
       <td style="font-size:11px">${l.mac}</td>
@@ -506,21 +524,26 @@ async function fetchDHCP() {
 }
 
 async function fetchRoutes() {
-  const list = await fetch(`${API}/api/routes`).then(r => r.json());
+  const list = await apiJson('/api/routes');
   el('routes-tbody').innerHTML = list.map(r => `
     <tr>
-      <td style="font-family:monospace">${r.dst}</td>
-      <td style="font-family:monospace">${r.gateway || '—'}</td>
-      <td style="color:var(--muted)">${r.iface || '—'}</td>
+      <td style="font-family:monospace">${escapeHtml(r.dst)}</td>
+      <td style="font-family:monospace">${escapeHtml(r.gateway || '—')}</td>
+      <td style="color:var(--muted)">${escapeHtml(r.iface || '—')}</td>
       <td style="color:var(--muted)">${r.distance}</td>
     </tr>`).join('');
 }
 
 async function fetchLogs() {
-  const list = await fetch(`${API}/api/logs`).then(r => r.json());
-  if (!list.length) { el('logs-tbody').innerHTML = '<tr><td colspan="3">No logs</td></tr>'; return; }
+  const list = await apiJson('/api/logs');
+  const q = (el('logs-filter')?.value || '').trim().toLowerCase();
+  const filtered = q ? list.filter(l =>
+    String(l.topics || '').toLowerCase().includes(q) ||
+    String(l.message || '').toLowerCase().includes(q)
+  ) : list;
+  if (!filtered.length) { el('logs-tbody').innerHTML = '<tr><td colspan="3">No logs</td></tr>'; return; }
   
-  el('logs-tbody').innerHTML = list.map(l => {
+  el('logs-tbody').innerHTML = filtered.map(l => {
     let color = 'var(--text)';
     const t = escapeHtml(l.topics || '');
     if (t.includes('critical') || t.includes('error')) color = 'var(--red)';
@@ -539,26 +562,46 @@ function generateMarkdownReport(data) {
   const fmtB = window.fmtBytes;
   let md = `# MikroTik Diagnostic Report\n*Generated at: ${timestamp}*\n\n`;
   
-  md += `## 1. System Info\n- **Identity**: ${escapeHtml(sys.identity)}\n- **RouterOS**: ${escapeHtml(sys.version)}\n- **Board**: ${escapeHtml(sys.board)}\n- **Uptime**: ${escapeHtml(sys.uptime)}\n`;
+  md += `## 1. System Info\n- **Identity**: ${sys.identity}\n- **RouterOS**: ${sys.version}\n- **Board**: ${sys.board}\n- **Uptime**: ${sys.uptime}\n`;
   md += `- **CPU**: ${sys.cpu_load}%\n- **Memory**: ${fmtMB(sys.total_memory - sys.free_memory)} / ${fmtMB(sys.total_memory)} USED\n- **Storage**: ${fmtMB(sys.total_hdd - sys.free_hdd)} / ${fmtMB(sys.total_hdd)} USED\n\n`;
   
   md += `## 2. Interfaces\n`;
   ifaces.forEach(i => {
-    md += `- **${escapeHtml(i.name)}** (${escapeHtml(i.type)}): ${i.running ? 'UP' : 'DOWN'}${i.disabled ? ' [DISABLED]' : ''} | RX: ${fmtB(i.rx_bytes)} | TX: ${fmtB(i.tx_bytes)}\n`;
+    md += `- **${i.name}** (${i.type}): ${i.running ? 'UP' : 'DOWN'}${i.disabled ? ' [DISABLED]' : ''} | RX: ${fmtB(i.rx_bytes)} | TX: ${fmtB(i.tx_bytes)}\n`;
   });
   
   md += `\n## 3. DHCP Leases (${dhcp.length})\n`;
-  dhcp.forEach(l => md += `- ${escapeHtml(l.address)} [${escapeHtml(l.mac)}] ${escapeHtml(l.hostname || 'Unknown')} (${escapeHtml(l.status)})\n`);
+  dhcp.forEach(l => md += `- ${l.address} [${l.mac}] ${l.hostname || 'Unknown'} (${l.status})\n`);
   
   md += `\n## 4. VPN Peers (${vpn.length})\n`;
-  vpn.forEach(p => md += `- ${escapeHtml(p.name)} -> ${escapeHtml(p.allowed)} | Handshake: ${escapeHtml(p.last_handshake || 'Never')} | RX: ${fmtB(p.rx_bytes)} | TX: ${fmtB(p.tx_bytes)}\n`);
+  vpn.forEach(p => md += `- ${p.name} -> ${p.allowed} | Handshake: ${p.last_handshake || 'Never'} | RX: ${fmtB(p.rx_bytes)} | TX: ${fmtB(p.tx_bytes)}\n`);
   
   return md;
 }
 
 async function fetchReport() {
-  const data = await fetch(`${API}/api/report`).then(r => r.json());
+  const data = await apiJson('/api/report');
   el('report-content').textContent = generateMarkdownReport(data);
+}
+
+async function fetchHealthSummary() {
+  const health = await apiJson('/api/health-summary');
+  if (!health || !health.checks) return;
+
+  const checks = health.checks;
+  const badgeCls = s => s === 'critical' ? 'b-red' : s === 'warning' ? 'b-yellow' : 'b-green';
+  const val = v => (v == null ? '—' : escapeHtml(v));
+  el('health-sys').innerHTML = `
+    <tr><td style="color:var(--muted)">CPU</td><td><span class="badge ${badgeCls(checks.cpu.status)}">${checks.cpu.status}</span> <span style="margin-left:6px">${val(checks.cpu.value)}%</span></td></tr>
+    <tr><td style="color:var(--muted)">Memory</td><td><span class="badge ${badgeCls(checks.memory.status)}">${checks.memory.status}</span> <span style="margin-left:6px">${val(checks.memory.value)}%</span></td></tr>
+    <tr><td style="color:var(--muted)">Disk</td><td><span class="badge ${badgeCls(checks.disk.status)}">${checks.disk.status}</span> <span style="margin-left:6px">${val(checks.disk.value)}%</span></td></tr>
+    <tr><td style="color:var(--muted)">Temp</td><td><span class="badge ${badgeCls(checks.temp.status)}">${checks.temp.status}</span> <span style="margin-left:6px">${val(checks.temp.value)}${checks.temp.value == null ? '' : '°C'}</span></td></tr>
+  `;
+
+  if (Array.isArray(health.alerts) && health.alerts.length) {
+    el('alert-banner').classList.remove('hidden');
+    el('alert-text').textContent = health.alerts.join('; ');
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -646,6 +689,9 @@ connectWs();
 let errCount = 0;
 
 async function refresh() {
+  if (refreshAbortController) refreshAbortController.abort();
+  refreshAbortController = new AbortController();
+  activeRefreshSignal = refreshAbortController.signal;
   const tasks = [fetchSystem(), fetchTraffic()];
   if (currentPage === 'interfaces') tasks.push(fetchInterfaces());
   if (currentPage === 'dhcp') tasks.push(fetchDHCP());
@@ -653,10 +699,12 @@ async function refresh() {
   if (currentPage === 'routes') tasks.push(fetchRoutes());
   if (currentPage === 'logs') tasks.push(fetchLogs());
   if (currentPage === 'report') tasks.push(fetchReport());
-  if (currentPage === 'dashboard' || currentPage === 'health') tasks.push(fetchInterfaces(), fetchDHCP(), fetchVPN(), fetchRoutes());
+  if (currentPage === 'health') tasks.push(fetchHealthSummary());
+  if (currentPage === 'dashboard') tasks.push(fetchInterfaces(), fetchDHCP(), fetchVPN(), fetchRoutes(), fetchHealthSummary());
 
   const results = await Promise.allSettled(tasks);
-  const failed = results.filter(r => r.status === 'rejected');
+  if (activeRefreshSignal?.aborted) return;
+  const failed = results.filter(r => r.status === 'rejected' && r.reason?.name !== 'AbortError');
   if (failed.length) {
     errCount++;
     if (errCount > 2) {
@@ -673,6 +721,9 @@ async function refresh() {
 }
 
 navigate(currentPage);
+el('logs-filter')?.addEventListener('input', () => { if (currentPage === 'logs') refresh(); });
+el('dhcp-search')?.addEventListener('input', () => { if (currentPage === 'dhcp') refresh(); });
+el('iface-filter')?.addEventListener('change', () => { if (currentPage === 'interfaces') refresh(); });
 checkAuth().then(ok => { if (ok) refresh(); });
 setInterval(() => {
   const locked = !el('login-overlay').classList.contains('hidden');

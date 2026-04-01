@@ -866,7 +866,14 @@ async function routeros_apply_template({ template, params, router, confirm, dry_
         added++;
       }
       const wouldAdd = rules.length - already;
-      if (dry_run === true || confirm !== true) return `Preview: firewall_baseline already exists=${already}, would add=${wouldAdd}. Re-run with confirm=true to apply.`;
+      if (dry_run === true || confirm !== true) {
+        return previewDestructive({
+          action: 'apply template firewall_baseline',
+          dry_run,
+          confirm,
+          preview: `firewall_baseline already exists=${already}, would add=${wouldAdd}`,
+        });
+      }
       return `✓ Applied firewall_baseline (added=${added}, already exists=${already})`;
     },
     wireguard_peer: async () => {
@@ -884,7 +891,14 @@ async function routeros_apply_template({ template, params, router, confirm, dry_
         (e['public-key'] || '') === peer['public-key']
       );
       if (found) return 'wireguard_peer: already exists';
-      if (dry_run === true || confirm !== true) return `Preview: wireguard_peer would add on ${iface}. Re-run with confirm=true to apply.`;
+      if (dry_run === true || confirm !== true) {
+        return previewDestructive({
+          action: 'apply template wireguard_peer',
+          dry_run,
+          confirm,
+          preview: `wireguard_peer would add on ${iface}`,
+        });
+      }
       await rosPut(conn, '/interface/wireguard/peers', peer);
       return `wireguard_peer: added to ${iface}`;
     },
@@ -898,7 +912,12 @@ async function routeros_apply_template({ template, params, router, confirm, dry_
       const poolExists = pools.some(x => x.name === poolName);
       const srvExists = servers.some(x => x.name === serverName);
       if (dry_run === true || confirm !== true) {
-        return `Preview: dhcp_server pool(${poolName}) ${poolExists ? 'already exists' : 'would add'}, server(${serverName}) ${srvExists ? 'already exists' : 'would add'}. Re-run with confirm=true to apply.`;
+        return previewDestructive({
+          action: 'apply template dhcp_server',
+          dry_run,
+          confirm,
+          preview: `dhcp_server pool(${poolName}) ${poolExists ? 'already exists' : 'would add'}, server(${serverName}) ${srvExists ? 'already exists' : 'would add'}`,
+        });
       }
       if (!poolExists) await rosPut(conn, '/ip/pool', { name: poolName, ranges: p.ranges || '192.168.88.10-192.168.88.254' });
       if (!srvExists) await rosPut(conn, '/ip/dhcp-server', { name: serverName, interface: p.interface || 'bridge', 'address-pool': poolName, disabled: 'no' });
@@ -1163,7 +1182,7 @@ const TOOL_DEFS = [
     description: 'Generate a comprehensive Markdown system report (system, health, security, VPN).',
     inputSchema: { type: 'object', properties: { ...router_p } } },
   { name: 'routeros_apply_template',
-    description: 'Apply a configuration template idempotently (requires confirm=true unless dry_run=true). Use routeros_list_templates to see available templates.',
+    description: 'Apply a configuration template idempotently by key fields (requires confirm=true unless dry_run=true). Use routeros_list_templates to see comparison details.',
     inputSchema: { type: 'object', required: ['template'],
       properties: { template: str('Template name'),
         params: obj('Template parameters', {}),

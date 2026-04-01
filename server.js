@@ -304,6 +304,18 @@ async function apiLogs() {
 // ── Report cache ──────────────────────────────────────────────────────────────
 let reportCache = null;
 const REPORT_CACHE_TTL = 30 * 1000;
+const SHORT_CACHE_TTL = 2000;
+const shortCache = new Map();
+
+function withShortCache(key, fn, ttl = SHORT_CACHE_TTL) {
+  return async () => {
+    const cached = shortCache.get(key);
+    if (cached && Date.now() - cached.ts < ttl) return cached.data;
+    const data = await fn();
+    shortCache.set(key, { ts: Date.now(), data });
+    return data;
+  };
+}
 
 async function apiReport() {
   if (reportCache && Date.now() - reportCache.ts < REPORT_CACHE_TTL) {
@@ -421,12 +433,12 @@ pollTraffic();
 
 // ── HTTP сервер ───────────────────────────────────────────────────────────────
 const ROUTES = {
-  '/api/system':     apiSystem,
-  '/api/interfaces': apiInterfaces,
+  '/api/system':     withShortCache('system', apiSystem),
+  '/api/interfaces': withShortCache('interfaces', apiInterfaces),
   '/api/traffic':    () => Promise.resolve(apiTraffic()),
-  '/api/vpn':        apiVPN,
-  '/api/dhcp':       apiDHCP,
-  '/api/routes':     apiRoutes,
+  '/api/vpn':        withShortCache('vpn', apiVPN),
+  '/api/dhcp':       withShortCache('dhcp', apiDHCP),
+  '/api/routes':     withShortCache('routes', apiRoutes),
   '/api/logs':       apiLogs,
   '/api/report':     apiReport,
   '/api/health-summary': apiHealthSummary,
@@ -604,7 +616,7 @@ const listenHost = process.env.HOST || '127.0.0.1';
 server.listen(CFG.port, listenHost, () => {
   const protocol = (sslKey && sslCert) ? 'https' : 'http';
   const routerProto = CFG.routerTls ? 'https' : 'http';
-  console.log(`✓ MikroTik Dashboard: ${protocol}://127.0.0.1:${CFG.port}`);
+  console.log(`✓ MikroTik Dashboard: ${protocol}://${listenHost}:${CFG.port}`);
   console.log(`✓ RouterOS REST target: ${routerProto}://${CFG.host}:${CFG.routerPort}/rest`);
 });
 
