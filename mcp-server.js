@@ -51,10 +51,11 @@ function table(rows, headers) {
 
 // ── Tool implementations ──────────────────────────────────────────────────────
 
-async function routeros_connect({ address, password, alias, use_tls, port }) {
+async function routeros_connect({ address, password, alias, use_tls, port, username }) {
   const trySsl = use_tls !== false && use_tls !== 'false';
+  const user = username || process.env.ROUTER_USER || 'MCP-User';
   for (const tls of trySsl ? [true, false] : [false]) {
-    const auth = 'Basic ' + Buffer.from(`MCP-User:${password}`).toString('base64');
+    const auth = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
     const conn = { address, auth, tls, port: Number(port) || (tls ? 443 : 80) };
     try {
       const res = await rosGet(conn, '/system/identity');
@@ -62,7 +63,7 @@ async function routeros_connect({ address, password, alias, use_tls, port }) {
       const key = alias || address;
       connections.set(key, conn);
       defaultRouter = key;
-      return `✓ Connected to ${id?.name || address} [${address}:${conn.port}] via ${tls ? 'HTTPS' : 'HTTP'}. Alias: "${key}"`;
+      return `✓ Connected to ${id?.name || address} [${address}:${conn.port}] via ${tls ? 'HTTPS' : 'HTTP'} as ${user}. Alias: "${key}"`;
     } catch(e) { if (!trySsl) throw e; }
   }
   throw new Error('Connection failed on both HTTPS and HTTP.');
@@ -1049,8 +1050,10 @@ function routeros_open_ui({ page, router }) {
     host: process.env.HOST || '127.0.0.1',
     port: process.env.PORT || 8080,
   });
-  const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
-  const child = spawn(cmd, [url], { detached: true, stdio: 'ignore' });
+  const isWin = process.platform === 'win32';
+  const cmd = isWin ? 'cmd' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
+  const args = isWin ? ['/c', 'start', '', url] : [url];
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
   child.unref();
   return `✓ Opening ${url}`;
 }
@@ -1088,9 +1091,10 @@ const router_p = { router: str('Router alias (optional, uses default connection)
 
 const TOOL_DEFS = [
   { name: 'routeros_connect',
-    description: 'Connect to a MikroTik router via RouterOS REST API. Username is always "MCP-User".',
+    description: 'Connect to a MikroTik router via RouterOS REST API. Username can be passed explicitly or taken from ROUTER_USER.',
     inputSchema: { type: 'object', required: ['address', 'password'],
-      properties: { address: str('Router IP or hostname'), password: str('Password for MCP-User'),
+      properties: { address: str('Router IP or hostname'), password: str('Router password'),
+                    username: str('Router username (optional; default ROUTER_USER, else MCP-User)'),
                     alias: str('Friendly name (optional)'), use_tls: boo('Use HTTPS (default: try TLS, fallback to HTTP)'),
                     port: num('RouterOS REST port (optional; defaults to 443 for TLS, 80 for HTTP)') } } },
   { name: 'routeros_disconnect',

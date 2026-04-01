@@ -229,6 +229,13 @@ async function apiInterfaces() {
 }
 
 async function apiVPN() {
+  const parseHandshakeAgeSeconds = (hs) => {
+    const m = String(hs || '').match(/(\d+)([smhd])/);
+    if (!m) return null;
+    const unit = { s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+    return unit ? Number(m[1]) * unit : null;
+  };
+  const onlineMaxAgeSec = Number(process.env.VPN_HANDSHAKE_MAX_AGE_SEC) || 120;
   const peers = await rosGet('/interface/wireguard/peers');
   return (Array.isArray(peers) ? peers : []).map(p => ({
     name:           p.interface ?? '',
@@ -236,7 +243,10 @@ async function apiVPN() {
     last_handshake: p['last-handshake'] ?? '',
     rx_bytes:       parseInt(p.rx ?? 0),
     tx_bytes:       parseInt(p.tx ?? 0),
-    connected:      !!p['last-handshake'],
+    connected:      (() => {
+      const ageSec = parseHandshakeAgeSeconds(p['last-handshake']);
+      return ageSec != null && ageSec <= onlineMaxAgeSec;
+    })(),
   }));
 }
 
@@ -463,8 +473,8 @@ const requestHandler = async (req, res) => {
 
   const url = req.url.split('?')[0];
 
-  // Login endpoint
-  if (url === '/api/login' && req.method === 'POST') {
+  // Login endpoint (only when auth is enabled)
+  if (CFG.auth && url === '/api/login' && req.method === 'POST') {
     let body = '';
     req.on('data', d => body += d);
     req.on('end', () => {
@@ -500,7 +510,7 @@ const requestHandler = async (req, res) => {
     return;
   }
 
-  if (url === '/api/logout' && req.method === 'POST') {
+  if (CFG.auth && url === '/api/logout' && req.method === 'POST') {
     const cookies = parseCookies(req);
     if (cookies.session) sessions.delete(cookies.session);
     res.writeHead(200, {

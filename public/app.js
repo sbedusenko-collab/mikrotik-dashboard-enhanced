@@ -208,6 +208,7 @@ const fmt = window.fmtRate;
 const fmtB = window.fmtBytes;
 const el = id => document.getElementById(id);
 const escapeHtml = window.escapeHtml || (s => String(s ?? ''));
+const VPN_ONLINE_MAX_AGE_SEC = 120;
 async function apiJson(path) {
   const res = await fetch(`${API}${path}`, { signal: activeRefreshSignal || undefined });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -239,11 +240,18 @@ const pages = {
   logs:       { title: 'System Logs', sub: 'Журнал событий RouterOS' },
   report:     { title: 'Report',      sub: 'Сводный системный отчет' },
 };
-let currentPage = localStorage.getItem('current-page') || 'dashboard';
+const startPageFromHash = (location.hash || '').replace(/^#/, '').trim();
+let currentPage = pages[startPageFromHash] ? startPageFromHash : (localStorage.getItem('current-page') || 'dashboard');
 
 function navigate(page) {
+  if (!pages[page]) page = 'dashboard';
   currentPage = page;
   localStorage.setItem('current-page', currentPage);
+  if (currentPage === 'dashboard') {
+    history.replaceState(null, '', location.pathname + location.search);
+  } else {
+    location.hash = currentPage;
+  }
   document.querySelectorAll('.sb-item').forEach(i => {
     i.classList.toggle('active', i.dataset.page === page);
   });
@@ -481,9 +489,21 @@ function hsClass(hs) {
   return secs < 120 ? 'hs-ok' : secs < 3600 ? 'hs-warn' : 'hs-dead';
 }
 
+function hsAgeSec(hs) {
+  const m = String(hs || '').match(/(\d+)([smhd])/);
+  if (!m) return null;
+  const unit = { s:1, m:60, h:3600, d:86400 }[m[2]];
+  return unit ? unit * parseInt(m[1], 10) : null;
+}
+
+function isPeerOnline(peer) {
+  const age = hsAgeSec(peer?.last_handshake);
+  return age != null && age <= VPN_ONLINE_MAX_AGE_SEC;
+}
+
 async function fetchVPN() {
   const peers = await apiJson('/api/vpn');
-  const connected = peers.filter(p => p.connected).length;
+  const connected = peers.filter(isPeerOnline).length;
 
   el('dash-vpn-count').textContent = `(${connected}/${peers.length})`;
 
@@ -493,7 +513,7 @@ async function fetchVPN() {
       <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${escapeHtml(p.last_handshake || '—')}</td>
       <td style="color:var(--green);font-size:11px">${fmtB(p.rx_bytes)}</td>
       <td style="color:var(--accent);font-size:11px">${fmtB(p.tx_bytes)}</td>
-      <td>${p.connected ? '<span class="badge b-green">OK</span>' : '<span class="badge b-red">off</span>'}</td>
+      <td>${isPeerOnline(p) ? '<span class="badge b-green">OK</span>' : '<span class="badge b-red">off</span>'}</td>
     </tr>`;
 
   el('dash-vpn-body').innerHTML = peers.slice(0, 8).map(vpnRow).join('');
@@ -504,7 +524,7 @@ async function fetchVPN() {
       <td class="${hsClass(p.last_handshake)}">${p.last_handshake || '—'}</td>
       <td style="color:var(--green)">${fmtB(p.rx_bytes)}</td>
       <td style="color:var(--accent)">${fmtB(p.tx_bytes)}</td>
-      <td>${p.connected ? '<span class="badge b-green">connected</span>' : '<span class="badge b-red">offline</span>'}</td>
+      <td>${isPeerOnline(p) ? '<span class="badge b-green">connected</span>' : '<span class="badge b-red">offline</span>'}</td>
     </tr>`).join('');
   enableDnD('vpn-tbody', 'tr', true);
 }
@@ -615,10 +635,8 @@ async function fetchHealthSummary() {
     <tr><td style="color:var(--muted)">Temp</td><td><span class="badge ${badgeCls(checks.temp.status)}">${checks.temp.status}</span> <span style="margin-left:6px">${val(checks.temp.value)}${checks.temp.value == null ? '' : '°C'}</span></td></tr>
   `;
 
-  if (Array.isArray(health.alerts) && health.alerts.length) {
-    el('alert-banner').classList.remove('hidden');
-    el('alert-text').textContent = health.alerts.join('; ');
-  }
+  healthAlertMessage = Array.isArray(health.alerts) && health.alerts.length ? health.alerts.join('; ') : '';
+  syncAlertBanner();
   el('health-sensors').innerHTML = `
     <tr><td style="color:var(--muted)">Reachable</td><td>${health.reachable ? 'yes' : 'no'}</td></tr>
     <tr><td style="color:var(--muted)">Severity</td><td>${escapeHtml(health.severity || 'unknown')}</td></tr>
@@ -634,6 +652,20 @@ function due(key, intervalMs) {
     return true;
   }
   return false;
+}
+
+let requestErrorMessage = '';
+let healthAlertMessage = '';
+function syncAlertBanner() {
+  const text = requestErrorMessage || healthAlertMessage;
+  const banner = el('alert-banner');
+  if (!banner) return;
+  if (text) {
+    banner.classList.remove('hidden');
+    el('alert-text').textContent = text;
+  } else {
+    banner.classList.add('hidden');
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -771,19 +803,22 @@ async function refresh() {
   if (failed.length) {
     errCount++;
     if (errCount > 2) {
-      const banner = el('alert-banner');
-      banner.classList.remove('hidden');
-      el('alert-text').textContent = `Ошибок запросов: ${failed.length}`;
+      requestErrorMessage = `Ошибок запросов: ${failed.length}`;
+      syncAlertBanner();
     }
   } else {
     errCount = 0;
-    const banner = el('alert-banner');
-    banner.classList.add('hidden');
+    requestErrorMessage = '';
+    syncAlertBanner();
     el('last-update').textContent = 'Обновлено: ' + new Date().toLocaleTimeString('ru');
   }
 }
 
 navigate(currentPage);
+window.addEventListener('hashchange', () => {
+  const page = (location.hash || '').replace(/^#/, '').trim();
+  if (pages[page]) navigate(page);
+});
 el('logs-filter')?.addEventListener('input', () => { if (currentPage === 'logs') refresh(); });
 el('dhcp-search')?.addEventListener('input', () => { if (currentPage === 'dhcp') refresh(); });
 el('iface-filter')?.addEventListener('change', () => { if (currentPage === 'interfaces') refresh(); });
