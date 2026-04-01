@@ -431,6 +431,11 @@ pollTraffic._interval = setInterval(pollTraffic, CFG.poll);
 pollTraffic();
 
 // ── HTTP сервер ───────────────────────────────────────────────────────────────
+const sslKey = process.env.SSL_KEY;
+const sslCert = process.env.SSL_CERT;
+const listenHost = process.env.HOST || '127.0.0.1';
+const listenProtocol = (sslKey && sslCert) ? 'https' : 'http';
+
 const ROUTES = {
   '/api/health':     () => Promise.resolve({ ok: true, ts: new Date().toISOString() }),
   '/api/metrics':    () => Promise.resolve({ ...serverMetrics, uptime_sec: Math.round(process.uptime()) }),
@@ -604,8 +609,6 @@ const requestHandler = async (req, res) => {
   });
 };
 
-const sslKey = process.env.SSL_KEY;
-const sslCert = process.env.SSL_CERT;
 let server;
 
 if (sslKey && sslCert) {
@@ -641,8 +644,6 @@ server.on('upgrade', (req, socket) => {
   handleWsConnection(socket);
 });
 
-const listenHost = process.env.HOST || '127.0.0.1';
-const listenProtocol = (sslKey && sslCert) ? 'https' : 'http';
 server.listen(CFG.port, listenHost, () => {
   const routerProto = CFG.routerTls ? 'https' : 'http';
   console.log(`✓ MikroTik Dashboard: ${listenProtocol}://${listenHost}:${CFG.port}`);
