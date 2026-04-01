@@ -8,7 +8,7 @@
 'use strict';
 
 const readline = require('readline');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const { fmtBytes } = require('./utils');
 const { loadEnvOnce } = require('./config');
 const { rosGet, rosPost, rosPatch, rosPut, rosDelete } = require('./routeros-client');
@@ -51,18 +51,18 @@ function table(rows, headers) {
 
 // ── Tool implementations ──────────────────────────────────────────────────────
 
-async function routeros_connect({ address, password, alias, use_tls }) {
+async function routeros_connect({ address, password, alias, use_tls, port }) {
   const trySsl = use_tls !== false && use_tls !== 'false';
   for (const tls of trySsl ? [true, false] : [false]) {
     const auth = 'Basic ' + Buffer.from(`MCP-User:${password}`).toString('base64');
-    const conn = { address, auth, tls };
+    const conn = { address, auth, tls, port: Number(port) || (tls ? 443 : 80) };
     try {
       const res = await rosGet(conn, '/system/identity');
       const id  = Array.isArray(res) ? res[0] : res;
       const key = alias || address;
       connections.set(key, conn);
       defaultRouter = key;
-      return `✓ Connected to ${id?.name || address} [${address}] via ${tls ? 'HTTPS' : 'HTTP'}. Alias: "${key}"`;
+      return `✓ Connected to ${id?.name || address} [${address}:${conn.port}] via ${tls ? 'HTTPS' : 'HTTP'}. Alias: "${key}"`;
     } catch(e) { if (!trySsl) throw e; }
   }
   throw new Error('Connection failed on both HTTPS and HTTP.');
@@ -79,7 +79,7 @@ function routeros_disconnect({ router }) {
 function routeros_list_connections() {
   if (!connections.size) return 'No active connections. Use routeros_connect first.';
   return [...connections.entries()].map(([k, v]) =>
-    `${k === defaultRouter ? '● ' : '○ '}${k}  →  ${v.address}  [${v.tls ? 'HTTPS' : 'HTTP'}]`
+    `${k === defaultRouter ? '● ' : '○ '}${k}  →  ${v.address}:${v.port || (v.tls ? 443 : 80)}  [${v.tls ? 'HTTPS' : 'HTTP'}]`
   ).join('\n');
 }
 
@@ -167,7 +167,9 @@ async function routeros_set({ path, id, values, router, confirm, dry_run }) {
   return `✓ Updated ${path}/${id}`;
 }
 
-async function routeros_add({ path, values, router }) {
+async function routeros_add({ path, values, router, confirm, dry_run }) {
+  const preview = previewDestructive({ action: 'add', dry_run, confirm, preview: `would add item to ${path} with values ${JSON.stringify(values || {})}` });
+  if (preview) return preview;
   const conn = getConn(router);
   const res = await rosPut(conn, path, values);
   return `✓ Added to ${path}` + (res?.['.id'] ? `  id=${res['.id']}` : '');
@@ -181,13 +183,17 @@ async function routeros_remove({ path, id, router, confirm, dry_run }) {
   return `✓ Removed ${path}/${id}`;
 }
 
-async function routeros_enable({ path, id, router }) {
+async function routeros_enable({ path, id, router, confirm, dry_run }) {
+  const preview = previewDestructive({ action: 'enable', dry_run, confirm, preview: `would enable ${path}/${id}` });
+  if (preview) return preview;
   const conn = getConn(router);
   await rosPost(conn, `${path}/${id}/enable`, {});
   return `✓ Enabled ${path}/${id}`;
 }
 
-async function routeros_disable({ path, id, router }) {
+async function routeros_disable({ path, id, router, confirm, dry_run }) {
+  const preview = previewDestructive({ action: 'disable', dry_run, confirm, preview: `would disable ${path}/${id}` });
+  if (preview) return preview;
   const conn = getConn(router);
   await rosPost(conn, `${path}/${id}/disable`, {});
   return `✓ Disabled ${path}/${id}`;
@@ -241,9 +247,11 @@ async function routeros_export({ path, router }) {
   return out.join('\n\n') || 'Nothing to export.';
 }
 
-async function routeros_backup({ name, router }) {
+async function routeros_backup({ name, router, confirm, dry_run }) {
   const conn = getConn(router);
   const fname = name || `backup-${new Date().toISOString().slice(0, 10)}`;
+  const preview = previewDestructive({ action: 'backup', dry_run, confirm, preview: `would create router backup "${fname}.backup"` });
+  if (preview) return preview;
   await rosPost(conn, '/system/backup/save', { name: fname });
   await sleep(2000);
   return `✓ Backup saved as "${fname}.backup" on the router.`;
@@ -431,17 +439,69 @@ async function routeros_dhcp_report({ router }) {
 
 async function routeros_pool_status({ router }) {
   const conn = getConn(router);
-  const [pRes, lRes] = await Promise.allSettled([
+  const [pRes, lRes, sRes] = await Promise.allSettled([
     rosGet(conn, '/ip/pool'),
     rosGet(conn, '/ip/dhcp-server/lease'),
+    rosGet(conn, '/ip/dhcp-server'),
   ]);
+
+  const ipToInt = (ip) => {
+    const parts = String(ip || '').split('.').map(n => Number(n));
+    if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+  };
+  const inRange = (ip, ranges) => {
+    const val = ipToInt(ip);
+    if (val == null) return false;
+    const chunks = String(ranges || '').split(',').map(s => s.trim()).filter(Boolean);
+    return chunks.some((chunk) => {
+      const [from, toRaw] = chunk.split('-').map(s => s.trim());
+      const a = ipToInt(from);
+      const b = ipToInt(toRaw || from);
+      if (a == null || b == null) return false;
+      const min = Math.min(a, b);
+      const max = Math.max(a, b);
+      return val >= min && val <= max;
+    });
+  };
+
   const lines = [];
   if (pRes.status === 'fulfilled') {
     const pools  = Array.isArray(pRes.value) ? pRes.value : [];
     const leases = lRes.status === 'fulfilled' ? (Array.isArray(lRes.value) ? lRes.value : []) : [];
-    const bound  = leases.filter(l => l.status === 'bound').length;
+    const servers = sRes.status === 'fulfilled' ? (Array.isArray(sRes.value) ? sRes.value : []) : [];
+    const poolStats = new Map(pools.map(p => [p.name, { used: 0, servers: new Set(), interfaces: new Set() }]));
+    const serverToPool = new Map();
+    servers.forEach((srv) => {
+      const poolName = srv['address-pool'];
+      if (!poolName) return;
+      serverToPool.set(srv.name, poolName);
+      if (poolStats.has(poolName)) {
+        if (srv.name) poolStats.get(poolName).servers.add(srv.name);
+        if (srv.interface) poolStats.get(poolName).interfaces.add(srv.interface);
+      }
+    });
+
+    for (const lease of leases) {
+      if (lease.status !== 'bound') continue;
+      const mappedPool = lease.server ? serverToPool.get(lease.server) : null;
+      if (mappedPool && poolStats.has(mappedPool)) {
+        poolStats.get(mappedPool).used += 1;
+        continue;
+      }
+      const byRange = pools.find(p => inRange(lease.address, p.ranges));
+      if (byRange && poolStats.has(byRange.name)) poolStats.get(byRange.name).used += 1;
+    }
+
     lines.push(`IP Pools: ${pools.length}`);
-    pools.forEach(p => lines.push(`  ${p.name}  ${p.ranges}  used≈${bound}`));
+    pools.forEach((p) => {
+      const stat = poolStats.get(p.name) || { used: 0, servers: new Set(), interfaces: new Set() };
+      const extra = [
+        stat.servers.size ? `servers=${[...stat.servers].join(',')}` : '',
+        stat.interfaces.size ? `iface=${[...stat.interfaces].join(',')}` : '',
+      ].filter(Boolean).join('  ');
+      lines.push(`  ${p.name}  ${p.ranges}  used=${stat.used}${extra ? `  ${extra}` : ''}`);
+    });
   }
   return lines.join('\n') || 'No pools.';
 }
@@ -781,15 +841,46 @@ async function routeros_discover_network({ router }) {
 
 async function routeros_drift_check({ router }) {
   const conn = getConn(router);
-  const res  = await rosGet(conn, '/system/clock');
-  const r    = Array.isArray(res) ? res[0] : res;
-  const localTs = Math.floor(Date.now() / 1000);
-  return [
-    `Router date : ${r.date || '—'}`,
-    `Router time : ${r.time || '—'}`,
-    `Local time  : ${new Date().toISOString()}`,
-    `NTP server  : ${r['ntp-server'] || '—'}`,
-  ].join('\n');
+  const [clockRes, ntpRes] = await Promise.allSettled([
+    rosGet(conn, '/system/clock'),
+    rosGet(conn, '/system/ntp/client'),
+  ]);
+
+  const clock = clockRes.status === 'fulfilled' ? (Array.isArray(clockRes.value) ? clockRes.value[0] : clockRes.value) : {};
+  const ntp = ntpRes.status === 'fulfilled' ? (Array.isArray(ntpRes.value) ? ntpRes.value[0] : ntpRes.value) : {};
+
+  const parseRouterDateTime = (dateStr, timeStr) => {
+    const date = String(dateStr || '').trim().toLowerCase();
+    const time = String(timeStr || '').trim();
+    const m = /^([a-z]{3})\/(\d{1,2})\/(\d{4})$/.exec(date);
+    const t = /^(\d{1,2}):(\d{2}):(\d{2})$/.exec(time);
+    if (!m || !t) return null;
+    const monthIdx = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 }[m[1]];
+    if (monthIdx == null) return null;
+    const dt = new Date(Number(m[3]), monthIdx, Number(m[2]), Number(t[1]), Number(t[2]), Number(t[3]));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  };
+
+  const localNow = new Date();
+  const routerDt = parseRouterDateTime(clock.date, clock.time);
+  const driftSec = routerDt ? Math.round((routerDt.getTime() - localNow.getTime()) / 1000) : null;
+
+  const lines = [
+    `Router date : ${clock.date || '—'}`,
+    `Router time : ${clock.time || '—'}`,
+    `Local time  : ${localNow.toISOString()}`,
+    driftSec == null ? 'Clock drift : unavailable (unparseable router date/time)' : `Clock drift : ${driftSec}s`,
+  ];
+
+  if (ntpRes.status === 'fulfilled') {
+    lines.push(`NTP enabled : ${ntp.enabled || '—'}`);
+    lines.push(`NTP sync    : ${ntp.synchronized || '—'}`);
+    lines.push(`NTP server  : ${ntp['server-dns-names'] || ntp['server-ip-addresses'] || '—'}`);
+  } else {
+    lines.push('NTP status  : unavailable');
+  }
+
+  return lines.join('\n');
 }
 
 async function routeros_audit_log({ router }) {
@@ -958,7 +1049,9 @@ function routeros_open_ui({ page, router }) {
     host: process.env.HOST || '127.0.0.1',
     port: process.env.PORT || 8080,
   });
-  exec(process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`);
+  const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
+  const child = spawn(cmd, [url], { detached: true, stdio: 'ignore' });
+  child.unref();
   return `✓ Opening ${url}`;
 }
 
@@ -998,7 +1091,8 @@ const TOOL_DEFS = [
     description: 'Connect to a MikroTik router via RouterOS REST API. Username is always "MCP-User".',
     inputSchema: { type: 'object', required: ['address', 'password'],
       properties: { address: str('Router IP or hostname'), password: str('Password for MCP-User'),
-                    alias: str('Friendly name (optional)'), use_tls: boo('Use HTTPS (default: try TLS, fallback to HTTP)') } } },
+                    alias: str('Friendly name (optional)'), use_tls: boo('Use HTTPS (default: try TLS, fallback to HTTP)'),
+                    port: num('RouterOS REST port (optional; defaults to 443 for TLS, 80 for HTTP)') } } },
   { name: 'routeros_disconnect',
     description: 'Disconnect from a router.',
     inputSchema: { type: 'object', properties: { ...router_p } } },
@@ -1029,9 +1123,12 @@ const TOOL_DEFS = [
                     dry_run: boo('Preview only, does not apply changes'),
                     ...router_p } } },
   { name: 'routeros_add',
-    description: 'Add a new RouterOS item.',
+    description: 'Add a new RouterOS item (requires confirm=true unless dry_run=true).',
     inputSchema: { type: 'object', required: ['path', 'values'],
-      properties: { path: str('REST path'), values: obj('Item fields', {}), ...router_p } } },
+      properties: { path: str('REST path'), values: obj('Item fields', {}),
+        confirm: boo('Apply change only when true'),
+        dry_run: boo('Preview only, does not apply changes'),
+        ...router_p } } },
   { name: 'routeros_remove',
     description: 'Remove a RouterOS item (requires confirm=true unless dry_run=true).',
     inputSchema: { type: 'object', required: ['path', 'id'],
@@ -1040,13 +1137,19 @@ const TOOL_DEFS = [
         dry_run: boo('Preview only, does not apply changes'),
         ...router_p } } },
   { name: 'routeros_enable',
-    description: 'Enable a disabled RouterOS item.',
+    description: 'Enable a disabled RouterOS item (requires confirm=true unless dry_run=true).',
     inputSchema: { type: 'object', required: ['path', 'id'],
-      properties: { path: str('REST path'), id: str('Item .id'), ...router_p } } },
+      properties: { path: str('REST path'), id: str('Item .id'),
+        confirm: boo('Apply change only when true'),
+        dry_run: boo('Preview only, does not apply changes'),
+        ...router_p } } },
   { name: 'routeros_disable',
-    description: 'Disable a RouterOS item.',
+    description: 'Disable a RouterOS item (requires confirm=true unless dry_run=true).',
     inputSchema: { type: 'object', required: ['path', 'id'],
-      properties: { path: str('REST path'), id: str('Item .id'), ...router_p } } },
+      properties: { path: str('REST path'), id: str('Item .id'),
+        confirm: boo('Apply change only when true'),
+        dry_run: boo('Preview only, does not apply changes'),
+        ...router_p } } },
   { name: 'routeros_bulk',
     description: 'Execute multiple REST operations in sequence. Destructive methods require confirm=true unless dry_run=true.',
     inputSchema: { type: 'object', required: ['operations'],
@@ -1059,8 +1162,11 @@ const TOOL_DEFS = [
     description: 'Export router configuration as JSON. Optionally limit to a specific path.',
     inputSchema: { type: 'object', properties: { path: str('REST path to export (optional)'), ...router_p } } },
   { name: 'routeros_backup',
-    description: 'Save a configuration backup on the router.',
-    inputSchema: { type: 'object', properties: { name: str('Backup filename (default: backup-YYYY-MM-DD)'), ...router_p } } },
+    description: 'Save a configuration backup on the router (requires confirm=true unless dry_run=true).',
+    inputSchema: { type: 'object', properties: { name: str('Backup filename (default: backup-YYYY-MM-DD)'),
+      confirm: boo('Apply change only when true'),
+      dry_run: boo('Preview only, does not apply changes'),
+      ...router_p } } },
   { name: 'routeros_ping',
     description: 'Ping a host from the router.',
     inputSchema: { type: 'object', required: ['address'],

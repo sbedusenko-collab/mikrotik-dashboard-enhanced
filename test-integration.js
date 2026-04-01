@@ -41,27 +41,32 @@ async function run() {
   if (r5.status === 200 && r5.body === '{}') { passed++; console.log('✓ Traffic endpoint'); }
   else { failed++; console.log('✗ Traffic endpoint'); }
 
-  // Test 6: Path traversal (before rate limit)
-  const r6 = await req('/../windows/system.ini');
-  if (r6.body.includes('MikroTik Dashboard')) { passed++; console.log('✓ Path traversal blocked (SPA fallback)'); }
+  // Test 6: Missing static asset with extension must return 404 (no SPA fallback)
+  const r6 = await req('/missing-bundle.js');
+  if (r6.status === 404) { passed++; console.log('✓ Missing asset returns 404'); }
+  else { failed++; console.log('✗ Missing asset returns 404'); }
+
+  // Test 7: Path traversal must be blocked
+  const r7 = await req('/../windows/system.ini');
+  if (r7.status === 403 || r7.status === 404) { passed++; console.log('✓ Path traversal blocked'); }
   else { failed++; console.log('✗ Path traversal blocked'); }
 
-  // Test 7: Dotfile access must be blocked
-  const r7 = await req('/.env');
-  if (r7.status === 403) { passed++; console.log('✓ Dotfile access blocked'); }
+  // Test 8: Dotfile access must be blocked
+  const r8 = await req('/.env');
+  if (r8.status === 403) { passed++; console.log('✓ Dotfile access blocked'); }
   else { failed++; console.log('✗ Dotfile access blocked'); }
 
-  // Test 8: Health summary endpoint
-  const r8 = await req('/api/health-summary');
+  // Test 9: Health summary endpoint
+  const r9 = await req('/api/health-summary');
   let healthOk = false;
   try {
-    const payload = JSON.parse(r8.body);
-    healthOk = r8.status === 200 && typeof payload.reachable === 'boolean' && typeof payload.severity === 'string';
+    const payload = JSON.parse(r9.body);
+    healthOk = r9.status === 200 && typeof payload.reachable === 'boolean' && typeof payload.severity === 'string';
   } catch (_) {}
   if (healthOk) { passed++; console.log('✓ Health summary endpoint'); }
   else { failed++; console.log('✗ Health summary endpoint'); }
 
-  // Test 9: Rate limiting
+  // Test 10: Rate limiting
   let rateLimited = false;
   const requests = [];
   for (let i = 0; i < 130; i++) {

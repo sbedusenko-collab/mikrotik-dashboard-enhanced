@@ -95,7 +95,7 @@ npm start
 **Использование в Claude:**
 
 ```
-routeros_connect(address="192.168.1.1", password="secret")
+routeros_connect(address="192.168.1.1", password="secret", port=443)
 routeros_system_info()
 routeros_health_check()
 routeros_security_audit()
@@ -117,6 +117,12 @@ routeros_open_ui(page="dashboard")
 - Для RouterOS в продакшене предпочтительно использовать `www-ssl`.
 - Не используйте `ALLOW_INSECURE_TLS=1` в production.
 - Разрушающие MCP-tools (`routeros_set`, `routeros_remove`, `routeros_upgrade`, `routeros_apply_template`) требуют `confirm=true` для применения.
+- `routeros_bulk` для методов `POST/PATCH/PUT/DELETE` также требует `confirm=true` (или `dry_run=true` для preview).
+
+## Ops notes
+
+- Backend использует short cache (около 2 секунд) для тяжёлых API: `system/interfaces/vpn/dhcp/routes/health-summary`.
+- Для smoke-проверок безопасности используйте `npm run test:security`.
 
 ## Структура проекта
 

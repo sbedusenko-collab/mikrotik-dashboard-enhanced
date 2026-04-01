@@ -4,7 +4,7 @@ const https = require('https');
 function rosRequest(conn, method, path, body) {
   return new Promise((resolve, reject) => {
     const lib = conn.tls ? https : http;
-    const port = conn.tls ? 443 : 80;
+    const port = Number(conn.port) || (conn.tls ? 443 : 80);
     const opts = {
       hostname: conn.address,
       port,

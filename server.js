@@ -9,6 +9,7 @@ const path  = require('path');
 const fs    = require('fs');
 const crypto = require('crypto');
 const { loadEnvOnce } = require('./config');
+const { rosGet: sharedRosGet } = require('./routeros-client');
 
 loadEnvOnce(__dirname);
 
@@ -38,67 +39,28 @@ if (missing.length) {
   console.warn(`⚠️  Missing required config: ${missing.join(', ')}. Set these in .env or environment variables.`);
 }
 
-const AUTH_HDR = 'Basic ' + Buffer.from(`${CFG.user}:${CFG.pass}`).toString('base64');
 const DIST_DIR = path.join(__dirname, 'public');
-
-function createRouterClient(cfg) {
-  const lib = cfg.routerTls ? https : http;
-
-  function request(method, pathname, body) {
-    return new Promise((resolve, reject) => {
-      const opts = {
-        hostname: cfg.host,
-        port: cfg.routerPort,
-        path: `/rest${pathname}`,
-        method,
-        headers: {
-          Authorization: AUTH_HDR,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        timeout: 5000,
-        rejectUnauthorized: !cfg.allowInsecureTls,
-      };
-
-      const payload = body ? JSON.stringify(body) : null;
-      if (payload) opts.headers['Content-Length'] = Buffer.byteLength(payload);
-
-      const req = lib.request(opts, res => {
-        let responseBody = '';
-        res.on('data', d => responseBody += d);
-        res.on('end', () => {
-          if (res.statusCode >= 400) {
-            return reject(new Error(`HTTP ${res.statusCode}: ${responseBody.slice(0, 200)}`));
-          }
-          try { resolve(responseBody ? JSON.parse(responseBody) : null); }
-          catch (_) { reject(new Error('JSON parse error: ' + responseBody.slice(0, 100))); }
-        });
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => req.destroy(new Error('timeout')));
-      if (payload) req.write(payload);
-      req.end();
-    });
-  }
-
-  return {
-    get(pathname) {
-      return request('GET', pathname);
-    },
-  };
-}
-
-const routerClient = createRouterClient(CFG);
+const ROUTER_CONN = {
+  address: CFG.host,
+  auth: 'Basic ' + Buffer.from(`${CFG.user}:${CFG.pass}`).toString('base64'),
+  tls: CFG.routerTls,
+  port: CFG.routerPort,
+};
 
 // ── Session store ─────────────────────────────────────────────────────────────
 const sessions = new Map();
 const SESSION_TTL = 24 * 60 * 60 * 1000;
 
+function normalizeIp(ip) {
+  if (!ip) return 'unknown';
+  const v = String(ip).trim();
+  return v.startsWith('::ffff:') ? v.slice(7) : v;
+}
+
 function createSession(ip) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
-  sessions.set(token, { created: now, lastSeen: now, ip: ip || 'unknown' });
+  sessions.set(token, { created: now, lastSeen: now, ip: normalizeIp(ip) });
   return token;
 }
 
@@ -108,7 +70,8 @@ function validateSession(token, ip) {
   if (!s) return false;
   const now = Date.now();
   if (now - (s.lastSeen || s.created) > SESSION_TTL) { sessions.delete(token); return false; }
-  if (ip && s.ip && s.ip !== ip) return false;
+  const reqIp = normalizeIp(ip);
+  if (reqIp && s.ip && s.ip !== reqIp) return false;
   s.lastSeen = now;
   return true;
 }
@@ -166,7 +129,7 @@ function cleanupRateLimit() {
 setInterval(cleanupRateLimit, RATE_LIMIT_WINDOW * 2);
 
 function getClientIp(req) {
-  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  return normalizeIp(req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown');
 }
 
 // ── История трафика ───────────────────────────────────────────────────────────
@@ -226,7 +189,7 @@ function broadcastUpdate(type, data) {
 
 // ── RouterOS REST helper ──────────────────────────────────────────────────────
 function rosGet(pathname) {
-  return routerClient.get(pathname);
+  return sharedRosGet(ROUTER_CONN, pathname);
 }
 
 // ── API handlers ──────────────────────────────────────────────────────────────
@@ -445,7 +408,7 @@ const ROUTES = {
   '/api/routes':     withShortCache('routes', apiRoutes),
   '/api/logs':       apiLogs,
   '/api/report':     apiReport,
-  '/api/health-summary': apiHealthSummary,
+  '/api/health-summary': withShortCache('health-summary', apiHealthSummary),
 };
 
 function setSecurityHeaders(res) {
@@ -508,7 +471,7 @@ const requestHandler = async (req, res) => {
       try {
         const { token } = JSON.parse(body);
         if (token === CFG.auth) {
-          const session = createSession();
+          const session = createSession(getClientIp(req));
           const cookieFlags = [
             `session=${session}`,
             'HttpOnly',
@@ -581,6 +544,12 @@ const requestHandler = async (req, res) => {
   }
   fs.readFile(filePath, (err, data) => {
     if (err) {
+      const hasExtension = path.extname(url) !== '';
+      if (hasExtension) {
+        res.writeHead(404);
+        logAccess(req, 404);
+        return res.end('Not found');
+      }
       fs.readFile(path.join(DIST_DIR, 'index.html'), (e2, d2) => {
         if (e2) { res.writeHead(404); logAccess(req, 404); return res.end('Not found'); }
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -612,9 +581,16 @@ if (sslKey && sslCert) {
 }
 
 server.on('upgrade', (req, socket) => {
+  const allowedOrigin = process.env.CORS_ORIGIN || `${(sslKey && sslCert) ? 'https' : 'http'}://${process.env.HOST || '127.0.0.1'}:${CFG.port}`;
+  const reqOrigin = req.headers.origin;
+  if (reqOrigin && reqOrigin !== allowedOrigin) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   if (CFG.auth) {
     const cookies = parseCookies(req);
-    if (!validateSession(cookies.session)) {
+    if (!validateSession(cookies.session, getClientIp(req))) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

@@ -199,6 +199,7 @@ const API = '';
 const CIRC = 2 * Math.PI * 40; // 251
 let refreshAbortController = null;
 let activeRefreshSignal = null;
+const lastFetchAt = {};
 
 // ════════════════════════════════════════════════
 // Helpers
@@ -209,6 +210,7 @@ const el = id => document.getElementById(id);
 const escapeHtml = window.escapeHtml || (s => String(s ?? ''));
 async function apiJson(path) {
   const res = await fetch(`${API}${path}`, { signal: activeRefreshSignal || undefined });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
@@ -293,17 +295,31 @@ function updateChart(chart, hist) {
 
 // Sparklines
 const sparks = {};
+function safeIdPart(v) {
+  return String(v ?? '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'x';
+}
 function getOrCreateSpark(containerId, name) {
   const key = containerId + name;
   if (sparks[key]) return sparks[key];
   const container = el(containerId);
   const row = document.createElement('div');
   row.className = 'spark-row';
-  row.innerHTML = `<div class="spark-name" title="${name}">${name}</div>
-    <canvas class="spark-canvas" id="spk-${containerId}-${name}"></canvas>
-    <div class="spark-val" id="spkv-${containerId}-${name}">–</div>`;
+  const safeKey = `${safeIdPart(containerId)}-${safeIdPart(name)}`;
+  const nameEl = document.createElement('div');
+  nameEl.className = 'spark-name';
+  nameEl.title = String(name ?? '');
+  nameEl.textContent = String(name ?? '');
+  const canvas = document.createElement('canvas');
+  canvas.className = 'spark-canvas';
+  canvas.id = `spk-${safeKey}`;
+  const val = document.createElement('div');
+  val.className = 'spark-val';
+  val.id = `spkv-${safeKey}`;
+  val.textContent = '–';
+  row.appendChild(nameEl);
+  row.appendChild(canvas);
+  row.appendChild(val);
   container.appendChild(row);
-  const canvas = row.querySelector('canvas');
   const chart = new SparkLine(canvas);
   sparks[key] = chart;
   return chart;
@@ -314,7 +330,8 @@ function updateSpark(containerId, name, hist) {
   const chart = getOrCreateSpark(containerId, name);
   chart.update([hist.map(p => p.rx), hist.map(p => p.tx)]);
   const last  = hist.at(-1);
-  const valEl = document.getElementById(`spkv-${containerId}-${name}`);
+  const safeKey = `${safeIdPart(containerId)}-${safeIdPart(name)}`;
+  const valEl = document.getElementById(`spkv-${safeKey}`);
   if (valEl) valEl.innerHTML =
     `<span style="color:var(--green)">↓${fmt(last.rx)}</span> <span style="color:var(--accent)">↑${fmt(last.tx)}</span>`;
 }
@@ -399,7 +416,7 @@ async function fetchInterfaces() {
   });
 
   // Update known interfaces for tabs
-  const names = visible.filter(i => !i.disabled).map(i => i.name);
+  const names = list.filter(i => !i.disabled).map(i => i.name);
   if (JSON.stringify(names) !== JSON.stringify(knownIfaceNames)) {
     knownIfaceNames = names;
     buildTabs('dash-tabs', dashChart, 'dash-iface-label');
@@ -602,6 +619,21 @@ async function fetchHealthSummary() {
     el('alert-banner').classList.remove('hidden');
     el('alert-text').textContent = health.alerts.join('; ');
   }
+  el('health-sensors').innerHTML = `
+    <tr><td style="color:var(--muted)">Reachable</td><td>${health.reachable ? 'yes' : 'no'}</td></tr>
+    <tr><td style="color:var(--muted)">Severity</td><td>${escapeHtml(health.severity || 'unknown')}</td></tr>
+    <tr><td style="color:var(--muted)">Alerts</td><td>${escapeHtml((health.alerts || []).join('; ') || 'none')}</td></tr>
+    <tr><td style="color:var(--muted)">Updated</td><td>${escapeHtml(health.timestamp || new Date().toISOString())}</td></tr>
+  `;
+}
+
+function due(key, intervalMs) {
+  const now = Date.now();
+  if (!lastFetchAt[key] || now - lastFetchAt[key] >= intervalMs) {
+    lastFetchAt[key] = now;
+    return true;
+  }
+  return false;
 }
 
 // ════════════════════════════════════════════════
@@ -612,12 +644,15 @@ async function checkAuth() {
     const r = await fetch(`${API}/api/system`);
     if (r.status === 401) {
       el('login-overlay').classList.remove('hidden');
+      stopWs();
       return false;
     }
     el('login-overlay').classList.add('hidden');
+    startWs();
     return true;
   } catch(e) {
     el('login-overlay').classList.add('hidden');
+    startWs();
     return true;
   }
 }
@@ -635,6 +670,7 @@ el('login-btn').addEventListener('click', async () => {
     const d = await r.json();
     if (d.ok) {
       el('login-overlay').classList.add('hidden');
+      startWs();
       refresh();
     } else {
       el('login-err').textContent = d.error || 'Invalid token';
@@ -653,9 +689,10 @@ el('login-token').addEventListener('keydown', e => {
 // ════════════════════════════════════════════════
 let ws = null;
 let wsReconnectTimer = null;
+let wsShouldReconnect = false;
 
 function connectWs() {
-  if (ws) return;
+  if (ws || !wsShouldReconnect) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
   ws.onmessage = (e) => {
@@ -676,12 +713,32 @@ function connectWs() {
   };
   ws.onclose = () => {
     ws = null;
-    wsReconnectTimer = setTimeout(connectWs, 3000);
+    if (wsShouldReconnect) wsReconnectTimer = setTimeout(connectWs, 3000);
   };
   ws.onerror = () => { ws.close(); };
 }
 
-connectWs();
+function startWs() {
+  wsShouldReconnect = true;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  connectWs();
+}
+
+function stopWs() {
+  wsShouldReconnect = false;
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  if (ws) {
+    const openWs = ws;
+    ws = null;
+    openWs.close();
+  }
+}
 
 // ════════════════════════════════════════════════
 // Main refresh loop
@@ -693,14 +750,20 @@ async function refresh() {
   refreshAbortController = new AbortController();
   activeRefreshSignal = refreshAbortController.signal;
   const tasks = [fetchSystem(), fetchTraffic()];
-  if (currentPage === 'interfaces') tasks.push(fetchInterfaces());
-  if (currentPage === 'dhcp') tasks.push(fetchDHCP());
-  if (currentPage === 'vpn') tasks.push(fetchVPN());
-  if (currentPage === 'routes') tasks.push(fetchRoutes());
+  if (currentPage === 'interfaces' && due('interfaces', 6000)) tasks.push(fetchInterfaces());
+  if (currentPage === 'dhcp' && due('dhcp', 15000)) tasks.push(fetchDHCP());
+  if (currentPage === 'vpn' && due('vpn', 6000)) tasks.push(fetchVPN());
+  if (currentPage === 'routes' && due('routes', 15000)) tasks.push(fetchRoutes());
   if (currentPage === 'logs') tasks.push(fetchLogs());
   if (currentPage === 'report') tasks.push(fetchReport());
-  if (currentPage === 'health') tasks.push(fetchHealthSummary());
-  if (currentPage === 'dashboard') tasks.push(fetchInterfaces(), fetchDHCP(), fetchVPN(), fetchRoutes(), fetchHealthSummary());
+  if (currentPage === 'health' && due('health-summary', 3000)) tasks.push(fetchHealthSummary());
+  if (currentPage === 'dashboard') {
+    if (due('interfaces', 6000)) tasks.push(fetchInterfaces());
+    if (due('vpn', 6000)) tasks.push(fetchVPN());
+    if (due('dhcp', 15000)) tasks.push(fetchDHCP());
+    if (due('routes', 15000)) tasks.push(fetchRoutes());
+    if (due('health-summary', 3000)) tasks.push(fetchHealthSummary());
+  }
 
   const results = await Promise.allSettled(tasks);
   if (activeRefreshSignal?.aborted) return;
