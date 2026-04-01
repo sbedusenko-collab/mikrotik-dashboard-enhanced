@@ -600,7 +600,8 @@ server.on('upgrade', (req, socket) => {
   handleWsConnection(socket);
 });
 
-server.listen(CFG.port, '127.0.0.1', () => {
+const listenHost = process.env.HOST || '127.0.0.1';
+server.listen(CFG.port, listenHost, () => {
   const protocol = (sslKey && sslCert) ? 'https' : 'http';
   const routerProto = CFG.routerTls ? 'https' : 'http';
   console.log(`✓ MikroTik Dashboard: ${protocol}://127.0.0.1:${CFG.port}`);

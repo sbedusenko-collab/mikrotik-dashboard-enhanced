@@ -193,17 +193,27 @@ async function routeros_disable({ path, id, router }) {
   return `✓ Disabled ${path}/${id}`;
 }
 
-async function routeros_bulk({ operations, router }) {
+async function routeros_bulk({ operations, router, confirm, dry_run }) {
   const conn = getConn(router);
   const results = [];
   for (const op of (operations || [])) {
     try {
-      let res;
-      if (op.method === 'GET')    res = await rosGet(conn, op.path);
-      else if (op.method === 'POST')   res = await rosPost(conn, op.path, op.body);
-      else if (op.method === 'PATCH')  res = await rosPatch(conn, op.path, op.body);
-      else if (op.method === 'PUT')    res = await rosPut(conn, op.path, op.body);
-      else if (op.method === 'DELETE') res = await rosDelete(conn, op.path);
+      const method = String(op.method || 'GET').toUpperCase();
+      const isDestructive = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method);
+      if (isDestructive) {
+        const preview = previewDestructive({
+          action: `bulk ${method}`,
+          dry_run,
+          confirm,
+          preview: `would execute ${method} ${op.path}`,
+        });
+        if (preview) { results.push(preview); continue; }
+      }
+      if (method === 'GET') await rosGet(conn, op.path);
+      else if (method === 'POST') await rosPost(conn, op.path, op.body);
+      else if (method === 'PATCH') await rosPatch(conn, op.path, op.body);
+      else if (method === 'PUT') await rosPut(conn, op.path, op.body);
+      else if (method === 'DELETE') await rosDelete(conn, op.path);
       results.push(`✓ ${op.method} ${op.path}`);
     } catch(e) {
       results.push(`✗ ${op.method} ${op.path}: ${e.message}`);
@@ -901,9 +911,9 @@ async function routeros_apply_template({ template, params, router, confirm, dry_
 
 function routeros_list_templates() {
   return [
-    'firewall_baseline  — Basic input/forward filter rules (params: wan)',
+    'firewall_baseline  — Basic input/forward filter rules (params: wan). Idempotency: key fields only (chain/action/in-interface/connection_state/protocol).',
     'wireguard_peer     — Add WireGuard peer (params: interface, allowed_address, public_key)',
-    'dhcp_server        — DHCP server + pool (params: interface, ranges, pool_name, server_name)',
+    'dhcp_server        — DHCP server + pool (params: interface, ranges, pool_name, server_name). Idempotency: by names.',
   ].join('\n');
 }
 
@@ -1019,10 +1029,12 @@ const TOOL_DEFS = [
     inputSchema: { type: 'object', required: ['path', 'id'],
       properties: { path: str('REST path'), id: str('Item .id'), ...router_p } } },
   { name: 'routeros_bulk',
-    description: 'Execute multiple REST operations in sequence.',
+    description: 'Execute multiple REST operations in sequence. Destructive methods require confirm=true unless dry_run=true.',
     inputSchema: { type: 'object', required: ['operations'],
       properties: { operations: { type: 'array', description: 'Array of {method, path, body}',
         items: obj('Operation', { method: str('GET/POST/PATCH/PUT/DELETE'), path: str('REST path'), body: obj('Request body', {}) }) },
+      confirm: boo('Apply destructive operations only when true'),
+      dry_run: boo('Preview destructive operations only'),
       ...router_p } } },
   { name: 'routeros_export',
     description: 'Export router configuration as JSON. Optionally limit to a specific path.',
