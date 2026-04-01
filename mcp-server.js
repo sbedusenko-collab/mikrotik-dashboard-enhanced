@@ -7,21 +7,15 @@
 
 'use strict';
 
-const http    = require('http');
-const https   = require('https');
 const readline = require('readline');
 const { exec } = require('child_process');
-const fs      = require('fs');
-const path    = require('path');
 const { fmtBytes } = require('./utils');
+const { loadEnvOnce } = require('./config');
+const { rosGet, rosPost, rosPatch, rosPut, rosDelete } = require('./routeros-client');
+const { buildUiUrl } = require('./routeros-tools-mcp');
+const { previewDestructive } = require('./routeros-tools-security');
 
-try {
-  const env = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  env.split('\n').forEach(l => {
-    const m = l.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
-  });
-} catch(e) {}
+loadEnvOnce(__dirname);
 
 // ── Server metadata ───────────────────────────────────────────────────────────
 const SERVER_INFO      = { name: 'mikrotik-mcp', version: '1.0.0' };
@@ -32,49 +26,6 @@ const connections = new Map();  // alias → { address, auth, tls }
 let   defaultRouter = null;
 
 // ── RouterOS REST helper ──────────────────────────────────────────────────────
-function rosRequest(conn, method, path, body) {
-  return new Promise((resolve, reject) => {
-    const lib  = conn.tls ? https : http;
-    const port = conn.tls ? 443 : 80;
-    const opts = {
-      hostname: conn.address, port,
-      path:   `/rest${path}`,
-      method,
-      headers: {
-        Authorization:   conn.auth,
-        Accept:          'application/json',
-        'Content-Type':  'application/json',
-      },
-      timeout: 10000,
-      rejectUnauthorized: process.env.ALLOW_INSECURE_TLS !== '1',
-    };
-    const bodyStr = body ? JSON.stringify(body) : null;
-    if (bodyStr) opts.headers['Content-Length'] = Buffer.byteLength(bodyStr);
-
-    const req = lib.request(opts, res => {
-      let data = '';
-      res.on('data', d => data += d);
-      res.on('end', () => {
-        if (res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
-          return;
-        }
-        try { resolve(data ? JSON.parse(data) : null); }
-        catch(e) { reject(new Error('JSON parse: ' + data.slice(0, 80))); }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    if (bodyStr) req.write(bodyStr);
-    req.end();
-  });
-}
-
-const rosGet    = (c, p)    => rosRequest(c, 'GET',    p, null);
-const rosPost   = (c, p, b) => rosRequest(c, 'POST',   p, b);
-const rosPatch  = (c, p, b) => rosRequest(c, 'PATCH',  p, b);
-const rosPut    = (c, p, b) => rosRequest(c, 'PUT',    p, b);
-const rosDelete = (c, p)    => rosRequest(c, 'DELETE', p, null);
 
 function getConn(router) {
   const key = router || defaultRouter;
@@ -208,7 +159,9 @@ async function routeros_get({ path, id, router }) {
   return Object.entries(obj).map(([k, v]) => `${k}: ${v}`).join('\n');
 }
 
-async function routeros_set({ path, id, values, router }) {
+async function routeros_set({ path, id, values, router, confirm, dry_run }) {
+  const preview = previewDestructive({ action: 'update', dry_run, confirm, preview: `would update ${path}/${id} with values ${JSON.stringify(values || {})}` });
+  if (preview) return preview;
   const conn = getConn(router);
   await rosPatch(conn, `${path}/${id}`, values);
   return `✓ Updated ${path}/${id}`;
@@ -220,7 +173,9 @@ async function routeros_add({ path, values, router }) {
   return `✓ Added to ${path}` + (res?.['.id'] ? `  id=${res['.id']}` : '');
 }
 
-async function routeros_remove({ path, id, router }) {
+async function routeros_remove({ path, id, router, confirm, dry_run }) {
+  const preview = previewDestructive({ action: 'remove', dry_run, confirm, preview: `would remove ${path}/${id}` });
+  if (preview) return preview;
   const conn = getConn(router);
   await rosDelete(conn, `${path}/${id}`);
   return `✓ Removed ${path}/${id}`;
@@ -597,7 +552,8 @@ async function routeros_wifi_status({ router }) {
   const lines = [];
   for (const p of ['/interface/wifi', '/interface/wireless']) {
     try {
-      const list = Array.isArray(await rosGet(conn, p)) ? await rosGet(conn, p) : [];
+      const res = await rosGet(conn, p);
+      const list = Array.isArray(res) ? res : [];
       if (list.length) {
         lines.push(`WiFi interfaces (${p}):`);
         list.forEach(i => lines.push(
@@ -608,7 +564,8 @@ async function routeros_wifi_status({ router }) {
   }
   for (const p of ['/interface/wifi/registration-table', '/interface/wireless/registration-table']) {
     try {
-      const list = Array.isArray(await rosGet(conn, p)) ? await rosGet(conn, p) : [];
+      const res = await rosGet(conn, p);
+      const list = Array.isArray(res) ? res : [];
       if (list.length) {
         lines.push(`\nClients: ${list.length}`);
         list.forEach(c => lines.push(
@@ -700,9 +657,11 @@ async function routeros_monitor_logs({ topics, duration, router }) {
   const conn = getConn(router);
   const secs = Math.min(parseInt(duration) || 10, 60);
   const url  = '/log' + (topics ? '?topics=' + encodeURIComponent(topics) : '');
-  const before = new Set((await rosGet(conn, url) || []).map(e => e['.id']));
+  const initial = await rosGet(conn, url);
+  const before = new Set((Array.isArray(initial) ? initial : []).map(e => e['.id']));
   await sleep(secs * 1000);
-  const after = Array.isArray(await rosGet(conn, url)) ? await rosGet(conn, url) : [];
+  const afterRes = await rosGet(conn, url);
+  const after = Array.isArray(afterRes) ? afterRes : [];
   const newEntries = after.filter(e => !before.has(e['.id']));
   if (!newEntries.length) return `No new log entries in ${secs}s.`;
   return newEntries.map(e => `${e.time || ''}  [${(e.topics || '').padEnd(20)}]  ${e.message || ''}`).join('\n');
@@ -768,7 +727,9 @@ async function routeros_check_updates({ router }) {
   }
 }
 
-async function routeros_upgrade({ router }) {
+async function routeros_upgrade({ router, confirm, dry_run }) {
+  const preview = previewDestructive({ action: 'upgrade', dry_run, confirm, preview: 'upgrade would be initiated and router may reboot' });
+  if (preview) return preview;
   const conn = getConn(router);
   await rosPost(conn, '/system/package/update/install', {});
   return '✓ Upgrade initiated. Router will reboot to apply updates.';
@@ -866,7 +827,7 @@ async function routeros_generate_report({ router }) {
   return sections.join('\n');
 }
 
-async function routeros_apply_template({ template, params, router }) {
+async function routeros_apply_template({ template, params, router, confirm, dry_run }) {
   const conn = getConn(router);
   const p = params || {};
   const templates = {
@@ -878,22 +839,60 @@ async function routeros_apply_template({ template, params, router }) {
         { chain: 'forward', action: 'accept', connection_state: 'established,related' },
         { chain: 'forward', action: 'drop',   connection_state: 'invalid' },
       ];
-      for (const r of rules) await rosPut(conn, '/ip/firewall/filter', r);
-      return `✓ Applied firewall_baseline (${rules.length} rules added)`;
+      const existingRes = await rosGet(conn, '/ip/firewall/filter');
+      const existing = Array.isArray(existingRes) ? existingRes : [];
+      let added = 0, already = 0;
+      for (const r of rules) {
+        const found = existing.find(e =>
+          (e.chain || '') === (r.chain || '') &&
+          (e.action || '') === (r.action || '') &&
+          (e['in-interface'] || '') === (r['in-interface'] || '') &&
+          (e.connection_state || '') === (r.connection_state || '') &&
+          (e.protocol || '') === (r.protocol || '')
+        );
+        if (found) { already++; continue; }
+        if (dry_run === true || confirm !== true) continue;
+        await rosPut(conn, '/ip/firewall/filter', r);
+        added++;
+      }
+      const wouldAdd = rules.length - already;
+      if (dry_run === true || confirm !== true) return `Preview: firewall_baseline already exists=${already}, would add=${wouldAdd}. Re-run with confirm=true to apply.`;
+      return `✓ Applied firewall_baseline (added=${added}, already exists=${already})`;
     },
     wireguard_peer: async () => {
       const iface = p.interface || 'wg0';
-      await rosPut(conn, '/interface/wireguard/peers', {
+      const peer = {
         interface: iface,
         'allowed-address': p.allowed_address || '10.0.0.2/32',
         'public-key': p.public_key || '',
-      });
-      return `✓ WireGuard peer added to ${iface}`;
+      };
+      const existingRes = await rosGet(conn, '/interface/wireguard/peers');
+      const existing = Array.isArray(existingRes) ? existingRes : [];
+      const found = existing.find(e =>
+        (e.interface || '') === peer.interface &&
+        (e['allowed-address'] || '') === peer['allowed-address'] &&
+        (e['public-key'] || '') === peer['public-key']
+      );
+      if (found) return 'wireguard_peer: already exists';
+      if (dry_run === true || confirm !== true) return `Preview: wireguard_peer would add on ${iface}. Re-run with confirm=true to apply.`;
+      await rosPut(conn, '/interface/wireguard/peers', peer);
+      return `wireguard_peer: added to ${iface}`;
     },
     dhcp_server: async () => {
-      await rosPut(conn, '/ip/pool', { name: p.pool_name || 'dhcp-pool', ranges: p.ranges || '192.168.88.10-192.168.88.254' });
-      await rosPut(conn, '/ip/dhcp-server', { name: p.server_name || 'dhcp1', interface: p.interface || 'bridge', 'address-pool': p.pool_name || 'dhcp-pool', disabled: 'no' });
-      return `✓ DHCP server template applied`;
+      const poolName = p.pool_name || 'dhcp-pool';
+      const serverName = p.server_name || 'dhcp1';
+      const poolRes = await rosGet(conn, '/ip/pool');
+      const srvRes = await rosGet(conn, '/ip/dhcp-server');
+      const pools = Array.isArray(poolRes) ? poolRes : [];
+      const servers = Array.isArray(srvRes) ? srvRes : [];
+      const poolExists = pools.some(x => x.name === poolName);
+      const srvExists = servers.some(x => x.name === serverName);
+      if (dry_run === true || confirm !== true) {
+        return `Preview: dhcp_server pool(${poolName}) ${poolExists ? 'already exists' : 'would add'}, server(${serverName}) ${srvExists ? 'already exists' : 'would add'}. Re-run with confirm=true to apply.`;
+      }
+      if (!poolExists) await rosPut(conn, '/ip/pool', { name: poolName, ranges: p.ranges || '192.168.88.10-192.168.88.254' });
+      if (!srvExists) await rosPut(conn, '/ip/dhcp-server', { name: serverName, interface: p.interface || 'bridge', 'address-pool': poolName, disabled: 'no' });
+      return `dhcp_server: added=${Number(!poolExists) + Number(!srvExists)}, already exists=${Number(poolExists) + Number(srvExists)}`;
     },
   };
   if (!templates[template]) return `Unknown template: ${template}. Available: ${Object.keys(templates).join(', ')}`;
@@ -924,9 +923,12 @@ async function routeros_watch({ path, interval, count, router }) {
 }
 
 function routeros_open_ui({ page, router }) {
-  const p = page || 'dashboard';
-  const hash = p === 'dashboard' ? '' : `#${p}`;
-  const url  = `http://127.0.0.1:8080${hash}`;
+  const url = buildUiUrl({
+    page,
+    sslEnabled: !!(process.env.SSL_KEY && process.env.SSL_CERT),
+    host: process.env.HOST || '127.0.0.1',
+    port: process.env.PORT || 8080,
+  });
   exec(process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`);
   return `✓ Opening ${url}`;
 }
@@ -990,18 +992,24 @@ const TOOL_DEFS = [
     inputSchema: { type: 'object', required: ['path', 'id'],
       properties: { path: str('REST path'), id: str('Item .id or name'), ...router_p } } },
   { name: 'routeros_set',
-    description: 'Update an existing RouterOS item.',
+    description: 'Update an existing RouterOS item (requires confirm=true unless dry_run=true).',
     inputSchema: { type: 'object', required: ['path', 'id', 'values'],
       properties: { path: str('REST path'), id: str('Item .id'),
-                    values: obj('Fields to update', {}), ...router_p } } },
+                    values: obj('Fields to update', {}),
+                    confirm: boo('Apply change only when true'),
+                    dry_run: boo('Preview only, does not apply changes'),
+                    ...router_p } } },
   { name: 'routeros_add',
     description: 'Add a new RouterOS item.',
     inputSchema: { type: 'object', required: ['path', 'values'],
       properties: { path: str('REST path'), values: obj('Item fields', {}), ...router_p } } },
   { name: 'routeros_remove',
-    description: 'Remove a RouterOS item.',
+    description: 'Remove a RouterOS item (requires confirm=true unless dry_run=true).',
     inputSchema: { type: 'object', required: ['path', 'id'],
-      properties: { path: str('REST path'), id: str('Item .id'), ...router_p } } },
+      properties: { path: str('REST path'), id: str('Item .id'),
+        confirm: boo('Apply change only when true'),
+        dry_run: boo('Preview only, does not apply changes'),
+        ...router_p } } },
   { name: 'routeros_enable',
     description: 'Enable a disabled RouterOS item.',
     inputSchema: { type: 'object', required: ['path', 'id'],
@@ -1115,8 +1123,11 @@ const TOOL_DEFS = [
     description: 'Check for available RouterOS package updates.',
     inputSchema: { type: 'object', properties: { ...router_p } } },
   { name: 'routeros_upgrade',
-    description: 'Install RouterOS updates (triggers reboot).',
-    inputSchema: { type: 'object', properties: { ...router_p } } },
+    description: 'Install RouterOS updates (triggers reboot; requires confirm=true unless dry_run=true).',
+    inputSchema: { type: 'object', properties: {
+      confirm: boo('Apply upgrade only when true'),
+      dry_run: boo('Preview only, does not apply changes'),
+      ...router_p } } },
   { name: 'routeros_file_list',
     description: 'List files on the router storage.',
     inputSchema: { type: 'object', properties: { ...router_p } } },
@@ -1140,9 +1151,13 @@ const TOOL_DEFS = [
     description: 'Generate a comprehensive Markdown system report (system, health, security, VPN).',
     inputSchema: { type: 'object', properties: { ...router_p } } },
   { name: 'routeros_apply_template',
-    description: 'Apply a configuration template. Use routeros_list_templates to see available templates.',
+    description: 'Apply a configuration template idempotently (requires confirm=true unless dry_run=true). Use routeros_list_templates to see available templates.',
     inputSchema: { type: 'object', required: ['template'],
-      properties: { template: str('Template name'), params: obj('Template parameters', {}), ...router_p } } },
+      properties: { template: str('Template name'),
+        params: obj('Template parameters', {}),
+        confirm: boo('Apply change only when true'),
+        dry_run: boo('Preview only, does not apply changes'),
+        ...router_p } } },
   { name: 'routeros_list_templates',
     description: 'List available configuration templates.',
     inputSchema: { type: 'object', properties: {} } },
