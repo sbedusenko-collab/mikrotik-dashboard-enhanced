@@ -95,24 +95,28 @@ const routerClient = createRouterClient(CFG);
 const sessions = new Map();
 const SESSION_TTL = 24 * 60 * 60 * 1000;
 
-function createSession() {
+function createSession(ip) {
   const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, { created: Date.now() });
+  const now = Date.now();
+  sessions.set(token, { created: now, lastSeen: now, ip: ip || 'unknown' });
   return token;
 }
 
-function validateSession(token) {
+function validateSession(token, ip) {
   if (!token) return false;
   const s = sessions.get(token);
   if (!s) return false;
-  if (Date.now() - s.created > SESSION_TTL) { sessions.delete(token); return false; }
+  const now = Date.now();
+  if (now - (s.lastSeen || s.created) > SESSION_TTL) { sessions.delete(token); return false; }
+  if (ip && s.ip && s.ip !== ip) return false;
+  s.lastSeen = now;
   return true;
 }
 
 function cleanupSessions() {
   const now = Date.now();
   for (const [k, v] of sessions) {
-    if (now - v.created > SESSION_TTL) sessions.delete(k);
+    if (now - (v.lastSeen || v.created) > SESSION_TTL) sessions.delete(k);
   }
 }
 setInterval(cleanupSessions, 60 * 60 * 1000);
@@ -130,7 +134,7 @@ function parseCookies(req) {
 function checkAuth(req, res) {
   if (!CFG.auth) return true;
   const cookies = parseCookies(req);
-  if (validateSession(cookies.session)) return true;
+  if (validateSession(cookies.session, getClientIp(req))) return true;
   res.writeHead(401, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Unauthorized', authRequired: true }));
   return false;
@@ -533,8 +537,20 @@ const requestHandler = async (req, res) => {
     return;
   }
 
+  if (url === '/api/logout' && req.method === 'POST') {
+    const cookies = parseCookies(req);
+    if (cookies.session) sessions.delete(cookies.session);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': 'session=; HttpOnly; SameSite=Strict; Max-Age=0; Path=/',
+    });
+    logAccess(req, 200);
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // Check if auth is required
-  if (CFG.auth && url.startsWith('/api/') && url !== '/api/login') {
+  if (CFG.auth && url.startsWith('/api/') && url !== '/api/login' && url !== '/api/logout') {
     if (!checkAuth(req, res)) { logAccess(req, 401); return; }
   }
 
