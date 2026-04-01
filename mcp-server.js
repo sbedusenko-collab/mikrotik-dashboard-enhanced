@@ -564,6 +564,19 @@ async function routeros_dns_cache_flush({ router }) {
 
 async function routeros_vpn_status({ router }) {
   const conn = getConn(router);
+  const parseHandshakeAgeSeconds = (hs) => {
+    const m = String(hs || '').match(/(\d+)([smhd])/);
+    if (!m) return null;
+    const unit = { s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+    return unit ? Number(m[1]) * unit : null;
+  };
+  const onlineMaxAgeSec = Number(process.env.VPN_HANDSHAKE_MAX_AGE_SEC) || 120;
+  const peerStatus = (hs) => {
+    const ageSec = parseHandshakeAgeSeconds(hs);
+    if (ageSec == null) return 'never';
+    return ageSec <= onlineMaxAgeSec ? 'active' : 'stale';
+  };
+
   const [ifR, pR] = await Promise.allSettled([
     rosGet(conn, '/interface/wireguard'),
     rosGet(conn, '/interface/wireguard/peers'),
@@ -577,14 +590,17 @@ async function routeros_vpn_status({ router }) {
     ));
   }
   if (pR.status === 'fulfilled') {
-    const list      = Array.isArray(pR.value) ? pR.value : [];
-    const connected = list.filter(p => p['last-handshake']).length;
-    lines.push(`\nPeers: ${list.length} total, ${connected} connected`);
+    const list = Array.isArray(pR.value) ? pR.value : [];
+    const activeCount = list.filter(p => peerStatus(p['last-handshake']) === 'active').length;
+    const staleCount = list.filter(p => peerStatus(p['last-handshake']) === 'stale').length;
+    const neverCount = list.length - activeCount - staleCount;
+    lines.push(`\nPeers: ${list.length} total, ${activeCount} active, ${staleCount} stale, ${neverCount} never`);
     list.forEach(p => {
       const hs = p['last-handshake'];
-      const st = !hs ? '🔴 never' : hs.match(/^\d+s$/) && parseInt(hs) < 180 ? '🟢 active' : '🟡 idle';
+      const st = peerStatus(hs);
+      const badge = st === 'active' ? '🟢' : st === 'stale' ? '🟡' : '🔴';
       lines.push(
-        `  ${(p.interface || '').padEnd(12)}  ${(p['allowed-address'] || '').padEnd(22)}  hs=${hs || '—'}  ${st}`
+        `  ${(p.interface || '').padEnd(12)}  ${(p['allowed-address'] || '').padEnd(22)}  hs=${hs || '—'}  ${badge} ${st}`
       );
     });
   }
