@@ -34,7 +34,19 @@ cp .env.example .env
 ROUTER_HOST=192.168.1.1
 ROUTER_USER=MCP-User
 ROUTER_PASS=password
+
+ROUTER_TLS=1
+ROUTER_API_PORT=443
+ALLOW_INSECURE_TLS=0
+
 PORT=8080
+HOST=127.0.0.1
+DASHBOARD_TOKEN=change-me
+
+# optional
+CORS_ORIGIN=http://127.0.0.1:8080
+SSL_KEY=/path/to/key.pem
+SSL_CERT=/path/to/cert.pem
 ```
 
 3. Запустите дашборд:
@@ -94,10 +106,23 @@ routeros_open_ui(page="dashboard")
 
 ## Требования
 
-- Node.js 16+
+- Node.js 18+
 - MikroTik RouterOS 7.x
 - REST API включён: `/ip/service` → `www` или `www-ssl`
 - Пользователь `MCP-User` с паролем (группа `full` или `read`)
+
+## Security notes
+
+- `DASHBOARD_TOKEN` — это только аутентификация UI/API, он **не заменяет TLS**.
+- Для RouterOS в продакшене предпочтительно использовать `www-ssl`.
+- Не используйте `ALLOW_INSECURE_TLS=1` в production.
+- Разрушающие MCP-tools (`routeros_set`, `routeros_remove`, `routeros_upgrade`, `routeros_apply_template`) требуют `confirm=true` для применения.
+- `routeros_bulk` для методов `POST/PATCH/PUT/DELETE` также требует `confirm=true` (или `dry_run=true` для preview).
+
+## Ops notes
+
+- Backend использует short cache (около 2 секунд) для тяжёлых API: `system/interfaces/vpn/dhcp/routes/health-summary`.
+- Для smoke-проверок безопасности используйте `npm run test:security`.
 
 ## Структура проекта
 
@@ -105,8 +130,14 @@ routeros_open_ui(page="dashboard")
 mikrotik-dashboard/
 ├── server.js       # Веб-дашборд (HTTP сервер + RouterOS REST клиент)
 ├── mcp-server.js   # MCP сервер (53 инструмента, stdio JSON-RPC)
-├── index.html      # SPA фронтенд (Vanilla JS, Canvas 2D)
+├── public/
+│   ├── index.html  # SPA разметка
+│   ├── styles.css  # CSS
+│   ├── app.js      # Фронтенд-логика
+│   └── utils.js    # Фронтенд утилиты
 ├── utils.js        # Общие утилиты форматирования
+├── config.js       # Загрузка env
+├── routeros-client.js # RouterOS REST helper
 ├── package.json    # Скрипты запуска
 └── .env.example    # Шаблон конфига
 ```
