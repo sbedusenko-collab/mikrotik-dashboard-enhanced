@@ -7,28 +7,15 @@ const http  = require('http');
 const https = require('https');
 const path  = require('path');
 const fs    = require('fs');
+const crypto = require('crypto');
+const { loadEnvOnce } = require('./config');
+const { rosGet: sharedRosGet } = require('./routeros-client');
 
-try {
-  const env = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
-  env.split('\n').forEach(l => {
-    const m = l.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
-  });
-} catch(e) {}
+loadEnvOnce(__dirname);
 
 if (!process.env.ROUTER_PASS) {
   console.warn('⚠️  WARNING: ROUTER_PASS is not provided in environment or .env file. Connection will likely fail.');
 }
-
-const missing = [];
-if (!process.env.ROUTER_HOST) missing.push('ROUTER_HOST');
-if (!process.env.ROUTER_USER) missing.push('ROUTER_USER');
-if (!process.env.ROUTER_PASS) missing.push('ROUTER_PASS');
-if (missing.length) {
-  console.warn(`⚠️  Missing required config: ${missing.join(', ')}. Set these in .env or environment variables.`);
-}
-
-const crypto = require('crypto');
 
 // ── Конфигурация ──────────────────────────────────────────────────────────────
 const CFG = {
@@ -39,34 +26,60 @@ const CFG = {
   poll:     Number(process.env.POLL_INTERVAL) || 3000,
   history:  Number(process.env.HISTORY_POINTS) || 60,
   auth:     process.env.DASHBOARD_TOKEN || '',
+  routerTls: process.env.ROUTER_TLS === '1',
+  allowInsecureTls: process.env.ALLOW_INSECURE_TLS === '1',
 };
+CFG.routerPort = Number(process.env.ROUTER_API_PORT) || (CFG.routerTls ? 443 : 80);
 
-const API_BASE  = `http://${CFG.host}/rest`;
-const AUTH_HDR  = 'Basic ' + Buffer.from(`${CFG.user}:${CFG.pass}`).toString('base64');
-const DIST_DIR  = path.join(__dirname);
+const missing = [];
+if (!process.env.ROUTER_HOST) missing.push('ROUTER_HOST');
+if (!process.env.ROUTER_USER) missing.push('ROUTER_USER');
+if (!process.env.ROUTER_PASS) missing.push('ROUTER_PASS');
+if (missing.length) {
+  console.warn(`⚠️  Missing required config: ${missing.join(', ')}. Set these in .env or environment variables.`);
+}
+
+const DIST_DIR = path.join(__dirname, 'public');
+const ROUTER_CONN = {
+  address: CFG.host,
+  auth: 'Basic ' + Buffer.from(`${CFG.user}:${CFG.pass}`).toString('base64'),
+  tls: CFG.routerTls,
+  port: CFG.routerPort,
+};
 
 // ── Session store ─────────────────────────────────────────────────────────────
 const sessions = new Map();
 const SESSION_TTL = 24 * 60 * 60 * 1000;
 
-function createSession() {
+function normalizeIp(ip) {
+  if (!ip) return 'unknown';
+  const v = String(ip).trim();
+  return v.startsWith('::ffff:') ? v.slice(7) : v;
+}
+
+function createSession(ip) {
   const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, { created: Date.now() });
+  const now = Date.now();
+  sessions.set(token, { created: now, lastSeen: now, ip: normalizeIp(ip) });
   return token;
 }
 
-function validateSession(token) {
+function validateSession(token, ip) {
   if (!token) return false;
   const s = sessions.get(token);
   if (!s) return false;
-  if (Date.now() - s.created > SESSION_TTL) { sessions.delete(token); return false; }
+  const now = Date.now();
+  if (now - (s.lastSeen || s.created) > SESSION_TTL) { sessions.delete(token); return false; }
+  const reqIp = normalizeIp(ip);
+  if (reqIp && s.ip && s.ip !== reqIp) return false;
+  s.lastSeen = now;
   return true;
 }
 
 function cleanupSessions() {
   const now = Date.now();
   for (const [k, v] of sessions) {
-    if (now - v.created > SESSION_TTL) sessions.delete(k);
+    if (now - (v.lastSeen || v.created) > SESSION_TTL) sessions.delete(k);
   }
 }
 setInterval(cleanupSessions, 60 * 60 * 1000);
@@ -84,7 +97,7 @@ function parseCookies(req) {
 function checkAuth(req, res) {
   if (!CFG.auth) return true;
   const cookies = parseCookies(req);
-  if (validateSession(cookies.session)) return true;
+  if (validateSession(cookies.session, getClientIp(req))) return true;
   res.writeHead(401, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Unauthorized', authRequired: true }));
   return false;
@@ -116,7 +129,7 @@ function cleanupRateLimit() {
 setInterval(cleanupRateLimit, RATE_LIMIT_WINDOW * 2);
 
 function getClientIp(req) {
-  return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  return normalizeIp(req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown');
 }
 
 // ── История трафика ───────────────────────────────────────────────────────────
@@ -125,6 +138,7 @@ const prevBytes      = {};   // name → {ts,rx,tx}
 
 // ── WebSocket (zero-dependency, RFC 6455) ─────────────────────────────────────
 const wsClients = new Set();
+const serverMetrics = { requests: 0, errors: 0, byStatus: {} };
 
 function wsAccept(req) {
   const key = req.headers['sec-websocket-key'];
@@ -158,7 +172,11 @@ function wsSend(ws, obj) {
     frame.writeBigUInt64BE(BigInt(len), 2);
     data.copy(frame, 10);
   }
-  try { ws.write(frame); } catch(_) {}
+  try { ws.write(frame); } catch (e) {
+    if (e?.code === 'EPIPE' || e?.code === 'ECONNRESET') {
+      console.warn(`[WS] write failed: ${e.code}`);
+    }
+  }
 }
 
 function handleWsConnection(ws) {
@@ -169,31 +187,14 @@ function handleWsConnection(ws) {
 
 function broadcastUpdate(type, data) {
   if (!wsClients.size) return;
-  const msg = JSON.stringify({ type, data, ts: Date.now() });
   for (const ws of wsClients) {
     wsSend(ws, { type, data, ts: Date.now() });
   }
 }
 
 // ── RouterOS REST helper ──────────────────────────────────────────────────────
-function rosGet(path) {
-  return new Promise((resolve, reject) => {
-    const url = `${API_BASE}${path}`;
-    const opts = {
-      headers: { Authorization: AUTH_HDR, Accept: 'application/json' },
-      timeout: 5000,
-    };
-    http.get(url, opts, res => {
-      let body = '';
-      res.on('data', d => body += d);
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); }
-        catch(e) { reject(new Error('JSON parse error: ' + body.slice(0, 100))); }
-      });
-    }).on('error', reject).on('timeout', function() {
-      this.destroy(new Error('timeout'));
-    });
-  });
+function rosGet(pathname) {
+  return sharedRosGet(ROUTER_CONN, pathname);
 }
 
 // ── API handlers ──────────────────────────────────────────────────────────────
@@ -233,6 +234,13 @@ async function apiInterfaces() {
 }
 
 async function apiVPN() {
+  const parseHandshakeAgeSeconds = (hs) => {
+    const m = String(hs || '').match(/(\d+)([smhd])/);
+    if (!m) return null;
+    const unit = { s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+    return unit ? Number(m[1]) * unit : null;
+  };
+  const onlineMaxAgeSec = Number(process.env.VPN_HANDSHAKE_MAX_AGE_SEC) || 120;
   const peers = await rosGet('/interface/wireguard/peers');
   return (Array.isArray(peers) ? peers : []).map(p => ({
     name:           p.interface ?? '',
@@ -240,7 +248,16 @@ async function apiVPN() {
     last_handshake: p['last-handshake'] ?? '',
     rx_bytes:       parseInt(p.rx ?? 0),
     tx_bytes:       parseInt(p.tx ?? 0),
-    connected:      !!p['last-handshake'],
+    handshake_age_sec: (() => parseHandshakeAgeSeconds(p['last-handshake']))(),
+    status:         (() => {
+      const ageSec = parseHandshakeAgeSeconds(p['last-handshake']);
+      if (ageSec == null) return 'never';
+      return ageSec <= onlineMaxAgeSec ? 'active' : 'stale';
+    })(),
+    connected:      (() => {
+      const ageSec = parseHandshakeAgeSeconds(p['last-handshake']);
+      return ageSec != null && ageSec <= onlineMaxAgeSec;
+    })(),
   }));
 }
 
@@ -275,6 +292,18 @@ async function apiLogs() {
 // ── Report cache ──────────────────────────────────────────────────────────────
 let reportCache = null;
 const REPORT_CACHE_TTL = 30 * 1000;
+const SHORT_CACHE_TTL = 2000;
+const shortCache = new Map();
+
+function withShortCache(key, fn, ttl = SHORT_CACHE_TTL) {
+  return async () => {
+    const cached = shortCache.get(key);
+    if (cached && Date.now() - cached.ts < ttl) return cached.data;
+    const data = await fn();
+    shortCache.set(key, { ts: Date.now(), data });
+    return data;
+  };
+}
 
 async function apiReport() {
   if (reportCache && Date.now() - reportCache.ts < REPORT_CACHE_TTL) {
@@ -283,9 +312,71 @@ async function apiReport() {
   const [sys, ifaces, dhcp, vpn] = await Promise.all([
     apiSystem(), apiInterfaces(), apiDHCP(), apiVPN()
   ]);
-  const data = { sys, ifaces, dhcp, vpn, timestamp: new Date().toLocaleString('ru') };
+  const data = { sys, ifaces, dhcp, vpn, timestamp: new Date().toLocaleString('ru-RU') };
   reportCache = { data, ts: Date.now() };
   return data;
+}
+
+async function apiHealthSummary() {
+  try {
+    const sys = await apiSystem();
+    const pct = (used, total) => total > 0 ? (used / total) * 100 : 0;
+    const memoryUsedPct = pct(sys.total_memory - sys.free_memory, sys.total_memory);
+    const diskUsedPct = pct(sys.total_hdd - sys.free_hdd, sys.total_hdd);
+    const temp = Number(sys.temperature);
+
+    const thresholds = {
+      cpuWarn: Number(process.env.HEALTH_CPU_WARN_PCT) || 70,
+      cpuCrit: Number(process.env.HEALTH_CPU_CRIT_PCT) || 85,
+      memWarn: Number(process.env.HEALTH_MEM_WARN_PCT) || 80,
+      memCrit: Number(process.env.HEALTH_MEM_CRIT_PCT) || 90,
+      diskWarn: Number(process.env.HEALTH_DISK_WARN_PCT) || 85,
+      diskCrit: Number(process.env.HEALTH_DISK_CRIT_PCT) || 95,
+      tempWarn: Number(process.env.HEALTH_TEMP_WARN_C) || 65,
+      tempCrit: Number(process.env.HEALTH_TEMP_CRIT_C) || 75,
+    };
+
+    const checks = {
+      cpu: { value: sys.cpu_load, status: sys.cpu_load > thresholds.cpuCrit ? 'critical' : (sys.cpu_load > thresholds.cpuWarn ? 'warning' : 'ok') },
+      memory: { value: Number(memoryUsedPct.toFixed(1)), status: memoryUsedPct > thresholds.memCrit ? 'critical' : (memoryUsedPct > thresholds.memWarn ? 'warning' : 'ok') },
+      disk: { value: Number(diskUsedPct.toFixed(1)), status: diskUsedPct > thresholds.diskCrit ? 'critical' : (diskUsedPct > thresholds.diskWarn ? 'warning' : 'ok') },
+      temp: { value: Number.isFinite(temp) ? temp : null, status: !Number.isFinite(temp) ? 'unknown' : (temp > thresholds.tempCrit ? 'critical' : (temp > thresholds.tempWarn ? 'warning' : 'ok')) },
+    };
+
+    const alerts = [];
+    if (checks.cpu.status !== 'ok') alerts.push(`CPU load ${checks.cpu.value}%`);
+    if (checks.memory.status !== 'ok') alerts.push(`Memory used ${checks.memory.value}%`);
+    if (checks.disk.status !== 'ok') alerts.push(`Disk used ${checks.disk.value}%`);
+    if (checks.temp.status === 'critical') alerts.push(`Temperature ${checks.temp.value}°C`);
+    if (checks.temp.status === 'warning') alerts.push(`Temperature high ${checks.temp.value}°C`);
+
+    const severity = ['critical', 'warning', 'ok'].find(s =>
+      Object.values(checks).some(c => c.status === s)
+    );
+
+    return {
+      reachable: true,
+      severity,
+      alerts,
+      checks,
+      identity: sys.identity,
+      timestamp: new Date().toISOString(),
+    };
+  } catch (e) {
+    return {
+      reachable: false,
+      severity: 'critical',
+      alerts: ['Router unreachable'],
+      error: e.message,
+      checks: {
+        cpu: { status: 'unknown', value: null },
+        memory: { status: 'unknown', value: null },
+        disk: { status: 'unknown', value: null },
+        temp: { status: 'unknown', value: null },
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
 }
 
 function apiTraffic() {
@@ -320,7 +411,7 @@ async function pollTraffic() {
           const txRate = Math.max(0, (tx - prev.tx) / dt);
           if (!trafficHistory[name]) trafficHistory[name] = [];
           trafficHistory[name].push({ ts: now, rx: rxRate, tx: txRate });
-          if (trafficHistory[name].length > CFG.history * 2)
+          if (trafficHistory[name].length > CFG.history)
             trafficHistory[name] = trafficHistory[name].slice(-CFG.history);
         }
       }
@@ -340,15 +431,23 @@ pollTraffic._interval = setInterval(pollTraffic, CFG.poll);
 pollTraffic();
 
 // ── HTTP сервер ───────────────────────────────────────────────────────────────
+const sslKey = process.env.SSL_KEY;
+const sslCert = process.env.SSL_CERT;
+const listenHost = process.env.HOST || '127.0.0.1';
+const listenProtocol = (sslKey && sslCert) ? 'https' : 'http';
+
 const ROUTES = {
-  '/api/system':     apiSystem,
-  '/api/interfaces': apiInterfaces,
+  '/api/health':     () => Promise.resolve({ ok: true, ts: new Date().toISOString() }),
+  '/api/metrics':    () => Promise.resolve({ ...serverMetrics, uptime_sec: Math.round(process.uptime()) }),
+  '/api/system':     withShortCache('system', apiSystem),
+  '/api/interfaces': withShortCache('interfaces', apiInterfaces),
   '/api/traffic':    () => Promise.resolve(apiTraffic()),
-  '/api/vpn':        apiVPN,
-  '/api/dhcp':       apiDHCP,
-  '/api/routes':     apiRoutes,
+  '/api/vpn':        withShortCache('vpn', apiVPN),
+  '/api/dhcp':       withShortCache('dhcp', apiDHCP),
+  '/api/routes':     withShortCache('routes', apiRoutes),
   '/api/logs':       apiLogs,
-  '/api/report':     apiReport,
+  '/api/report':     withShortCache('report', apiReport),
+  '/api/health-summary': withShortCache('health-summary', apiHealthSummary),
 };
 
 function setSecurityHeaders(res) {
@@ -361,11 +460,20 @@ function setSecurityHeaders(res) {
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'");
 }
 
+function isForbiddenStaticPath(urlPath) {
+  const baseName = path.basename(urlPath || '');
+  if (baseName.startsWith('.')) return true;
+  return ['.env', '.pem', '.key', '.crt'].includes(baseName.toLowerCase());
+}
+
 function logAccess(req, statusCode) {
   const method = req.method || '-';
   const url = req.url || '-';
   const ip = getClientIp(req);
   const time = new Date().toISOString();
+  serverMetrics.requests += 1;
+  serverMetrics.byStatus[statusCode] = (serverMetrics.byStatus[statusCode] || 0) + 1;
+  if (statusCode >= 400) serverMetrics.errors += 1;
   console.log(`${ip} - [${time}] "${method} ${url}" ${statusCode}`);
 }
 
@@ -384,25 +492,39 @@ const requestHandler = async (req, res) => {
   }
 
   // CORS
-  res.setHeader('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || `http://localhost:${CFG.port}`);
+  const allowedOrigin = process.env.CORS_ORIGIN || `http://localhost:${CFG.port}`;
+  const reqOrigin = req.headers.origin;
+  if (reqOrigin && reqOrigin === allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
   const url = req.url.split('?')[0];
 
-  // Login endpoint
-  if (url === '/api/login' && req.method === 'POST') {
+  // Login endpoint (only when auth is enabled)
+  if (CFG.auth && url === '/api/login' && req.method === 'POST') {
     let body = '';
     req.on('data', d => body += d);
     req.on('end', () => {
       try {
         const { token } = JSON.parse(body);
         if (token === CFG.auth) {
-          const session = createSession();
+          const session = createSession(getClientIp(req));
+          const cookieFlags = [
+            `session=${session}`,
+            'HttpOnly',
+            'SameSite=Strict',
+            `Max-Age=${SESSION_TTL / 1000}`,
+            'Path=/',
+          ];
+          if (sslKey && sslCert) cookieFlags.push('Secure');
           res.writeHead(200, {
             'Content-Type': 'application/json',
-            'Set-Cookie': `session=${session}; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL / 1000}; Path=/`,
+            'Set-Cookie': cookieFlags.join('; '),
           });
           logAccess(req, 200);
           res.end(JSON.stringify({ ok: true }));
@@ -420,8 +542,20 @@ const requestHandler = async (req, res) => {
     return;
   }
 
+  if (CFG.auth && url === '/api/logout' && req.method === 'POST') {
+    const cookies = parseCookies(req);
+    if (cookies.session) sessions.delete(cookies.session);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': 'session=; HttpOnly; SameSite=Strict; Max-Age=0; Path=/',
+    });
+    logAccess(req, 200);
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
   // Check if auth is required
-  if (CFG.auth && url.startsWith('/api/') && url !== '/api/login') {
+  if (CFG.auth && url.startsWith('/api/') && !['/api/login', '/api/logout', '/api/health'].includes(url)) {
     if (!checkAuth(req, res)) { logAccess(req, 401); return; }
   }
 
@@ -447,8 +581,17 @@ const requestHandler = async (req, res) => {
   if (!normalizedPath.startsWith(normalizedDist + path.sep) && normalizedPath !== normalizedDist) {
     res.writeHead(403); logAccess(req, 403); return res.end('Forbidden');
   }
+  if (isForbiddenStaticPath(url)) {
+    res.writeHead(403); logAccess(req, 403); return res.end('Forbidden');
+  }
   fs.readFile(filePath, (err, data) => {
     if (err) {
+      const hasExtension = path.extname(url) !== '';
+      if (hasExtension) {
+        res.writeHead(404);
+        logAccess(req, 404);
+        return res.end('Not found');
+      }
       fs.readFile(path.join(DIST_DIR, 'index.html'), (e2, d2) => {
         if (e2) { res.writeHead(404); logAccess(req, 404); return res.end('Not found'); }
         res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -466,8 +609,6 @@ const requestHandler = async (req, res) => {
   });
 };
 
-const sslKey = process.env.SSL_KEY;
-const sslCert = process.env.SSL_CERT;
 let server;
 
 if (sslKey && sslCert) {
@@ -480,6 +621,21 @@ if (sslKey && sslCert) {
 }
 
 server.on('upgrade', (req, socket) => {
+  const allowedOrigin = process.env.CORS_ORIGIN || `${listenProtocol}://${listenHost}:${CFG.port}`;
+  const reqOrigin = req.headers.origin;
+  if (reqOrigin && reqOrigin !== allowedOrigin) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  if (CFG.auth) {
+    const cookies = parseCookies(req);
+    if (!validateSession(cookies.session, getClientIp(req))) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+  }
   if (req.headers.upgrade !== 'websocket') { socket.destroy(); return; }
   const handshake = wsAccept(req);
   if (!handshake) { socket.destroy(); return; }
@@ -488,9 +644,10 @@ server.on('upgrade', (req, socket) => {
   handleWsConnection(socket);
 });
 
-server.listen(CFG.port, '127.0.0.1', () => {
-  const protocol = (sslKey && sslCert) ? 'https' : 'http';
-  console.log(`✓ MikroTik Dashboard: ${protocol}://127.0.0.1:${CFG.port}`);
+server.listen(CFG.port, listenHost, () => {
+  const routerProto = CFG.routerTls ? 'https' : 'http';
+  console.log(`✓ MikroTik Dashboard: ${listenProtocol}://${listenHost}:${CFG.port}`);
+  console.log(`✓ RouterOS REST target: ${routerProto}://${CFG.host}:${CFG.routerPort}/rest`);
 });
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────

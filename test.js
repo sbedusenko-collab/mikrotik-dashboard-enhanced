@@ -4,24 +4,13 @@
  * Run: node test.js
  */
 
-let passed = 0;
-let failed = 0;
-
-function assert(condition, msg) {
-  if (condition) { passed++; return; }
-  failed++;
-  console.error(`  ✗ ${msg}`);
-}
-
-function assertEq(a, b, msg) {
-  if (a === b) { passed++; return; }
-  failed++;
-  console.error(`  ✗ ${msg} — expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
-}
+const { createAsserts } = require('./test-helpers');
+const { assert, assertEq, stats } = createAsserts();
+let caseFailures = 0;
 
 function test(name, fn) {
   try { fn(); console.log(`  ✓ ${name}`); }
-  catch(e) { failed++; console.error(`  ✗ ${name}: ${e.message}`); }
+  catch(e) { caseFailures++; console.error(`  ✗ ${name}: ${e.message}`); }
 }
 
 // ── Helpers (inline copies to test logic without requiring server.js) ──────────
@@ -36,18 +25,25 @@ function parseCookies(header) {
 }
 
 function fmtBytes(b) {
-  b = parseInt(b) || 0;
-  if (b > 1e9) return (b / 1e9).toFixed(2) + ' GB';
-  if (b > 1e6) return (b / 1e6).toFixed(2) + ' MB';
-  if (b > 1e3) return (b / 1e3).toFixed(1) + ' KB';
-  return b + ' B';
+  b = Number(b) || 0;
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  while (Math.abs(b) >= 1024 && i < units.length - 1) {
+    b /= 1024;
+    i++;
+  }
+  return `${b.toFixed(i === 0 ? 0 : i < 2 ? 1 : 2)} ${units[i]}`;
 }
 
 function fmtRate(b) {
-  if (b < 1e3) return b.toFixed(0) + ' B/s';
-  if (b < 1e6) return (b/1e3).toFixed(1) + ' KB/s';
-  if (b < 1e9) return (b/1e6).toFixed(2) + ' MB/s';
-  return (b/1e9).toFixed(2) + ' GB/s';
+  b = Number(b) || 0;
+  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s'];
+  let i = 0;
+  while (Math.abs(b) >= 1024 && i < units.length - 1) {
+    b /= 1024;
+    i++;
+  }
+  return `${b.toFixed(i === 0 ? 0 : i < 2 ? 1 : 2)} ${units[i]}`;
 }
 
 function table(rows, headers) {
@@ -86,16 +82,16 @@ test('handles missing cookie header', () => {
 
 console.log('\nByte formatting:');
 test('formats bytes', () => { assertEq(fmtBytes(500), '500 B', 'bytes'); });
-test('formats KB', () => { assertEq(fmtBytes(1500), '1.5 KB', 'KB'); });
-test('formats MB', () => { assertEq(fmtBytes(2500000), '2.50 MB', 'MB'); });
-test('formats GB', () => { assertEq(fmtBytes(1500000000), '1.50 GB', 'GB'); });
+test('formats KiB', () => { assertEq(fmtBytes(1500), '1.5 KiB', 'KiB'); });
+test('formats MiB', () => { assertEq(fmtBytes(2500000), '2.38 MiB', 'MiB'); });
+test('formats GiB', () => { assertEq(fmtBytes(1500000000), '1.40 GiB', 'GiB'); });
 test('handles zero', () => { assertEq(fmtBytes(0), '0 B', 'zero'); });
 test('handles negative', () => { assertEq(fmtBytes(-1), '-1 B', 'negative'); });
 
 console.log('\nRate formatting:');
 test('formats B/s', () => { assertEq(fmtRate(500), '500 B/s', 'B/s'); });
-test('formats KB/s', () => { assertEq(fmtRate(1500), '1.5 KB/s', 'KB/s'); });
-test('formats MB/s', () => { assertEq(fmtRate(2500000), '2.50 MB/s', 'MB/s'); });
+test('formats KiB/s', () => { assertEq(fmtRate(1500), '1.5 KiB/s', 'KiB/s'); });
+test('formats MiB/s', () => { assertEq(fmtRate(2500000), '2.38 MiB/s', 'MiB/s'); });
 
 console.log('\nTable formatting:');
 test('formats table', () => {
@@ -127,6 +123,8 @@ test('report cache TTL is 30 seconds', () => {
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 
+const s = stats();
+const failed = s.failed + caseFailures;
 console.log(`\n${'─'.repeat(40)}`);
-console.log(`Results: ${passed} passed, ${failed} failed, ${passed + failed} total`);
+console.log(`Results: ${s.passed} passed, ${failed} failed, ${s.passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
