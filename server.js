@@ -243,6 +243,12 @@ async function apiVPN() {
     last_handshake: p['last-handshake'] ?? '',
     rx_bytes:       parseInt(p.rx ?? 0),
     tx_bytes:       parseInt(p.tx ?? 0),
+    handshake_age_sec: (() => parseHandshakeAgeSeconds(p['last-handshake']))(),
+    status:         (() => {
+      const ageSec = parseHandshakeAgeSeconds(p['last-handshake']);
+      if (ageSec == null) return 'never';
+      return ageSec <= onlineMaxAgeSec ? 'active' : 'stale';
+    })(),
     connected:      (() => {
       const ageSec = parseHandshakeAgeSeconds(p['last-handshake']);
       return ageSec != null && ageSec <= onlineMaxAgeSec;
@@ -314,11 +320,22 @@ async function apiHealthSummary() {
     const diskUsedPct = pct(sys.total_hdd - sys.free_hdd, sys.total_hdd);
     const temp = Number(sys.temperature);
 
+    const thresholds = {
+      cpuWarn: Number(process.env.HEALTH_CPU_WARN_PCT) || 70,
+      cpuCrit: Number(process.env.HEALTH_CPU_CRIT_PCT) || 85,
+      memWarn: Number(process.env.HEALTH_MEM_WARN_PCT) || 80,
+      memCrit: Number(process.env.HEALTH_MEM_CRIT_PCT) || 90,
+      diskWarn: Number(process.env.HEALTH_DISK_WARN_PCT) || 85,
+      diskCrit: Number(process.env.HEALTH_DISK_CRIT_PCT) || 95,
+      tempWarn: Number(process.env.HEALTH_TEMP_WARN_C) || 65,
+      tempCrit: Number(process.env.HEALTH_TEMP_CRIT_C) || 75,
+    };
+
     const checks = {
-      cpu: { value: sys.cpu_load, status: sys.cpu_load > 85 ? 'critical' : (sys.cpu_load > 70 ? 'warning' : 'ok') },
-      memory: { value: Number(memoryUsedPct.toFixed(1)), status: memoryUsedPct > 90 ? 'critical' : (memoryUsedPct > 80 ? 'warning' : 'ok') },
-      disk: { value: Number(diskUsedPct.toFixed(1)), status: diskUsedPct > 95 ? 'critical' : (diskUsedPct > 85 ? 'warning' : 'ok') },
-      temp: { value: Number.isFinite(temp) ? temp : null, status: !Number.isFinite(temp) ? 'unknown' : (temp > 75 ? 'critical' : (temp > 65 ? 'warning' : 'ok')) },
+      cpu: { value: sys.cpu_load, status: sys.cpu_load > thresholds.cpuCrit ? 'critical' : (sys.cpu_load > thresholds.cpuWarn ? 'warning' : 'ok') },
+      memory: { value: Number(memoryUsedPct.toFixed(1)), status: memoryUsedPct > thresholds.memCrit ? 'critical' : (memoryUsedPct > thresholds.memWarn ? 'warning' : 'ok') },
+      disk: { value: Number(diskUsedPct.toFixed(1)), status: diskUsedPct > thresholds.diskCrit ? 'critical' : (diskUsedPct > thresholds.diskWarn ? 'warning' : 'ok') },
+      temp: { value: Number.isFinite(temp) ? temp : null, status: !Number.isFinite(temp) ? 'unknown' : (temp > thresholds.tempCrit ? 'critical' : (temp > thresholds.tempWarn ? 'warning' : 'ok')) },
     };
 
     const alerts = [];

@@ -497,8 +497,15 @@ function hsAgeSec(hs) {
 }
 
 function isPeerOnline(peer) {
+  if (peer?.status) return peer.status === 'active';
   const age = hsAgeSec(peer?.last_handshake);
   return age != null && age <= VPN_ONLINE_MAX_AGE_SEC;
+}
+
+function peerStatus(peer) {
+  if (peer?.status) return peer.status;
+  if (isPeerOnline(peer)) return 'active';
+  return peer?.last_handshake ? 'stale' : 'never';
 }
 
 async function fetchVPN() {
@@ -513,7 +520,11 @@ async function fetchVPN() {
       <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${escapeHtml(p.last_handshake || '—')}</td>
       <td style="color:var(--green);font-size:11px">${fmtB(p.rx_bytes)}</td>
       <td style="color:var(--accent);font-size:11px">${fmtB(p.tx_bytes)}</td>
-      <td>${isPeerOnline(p) ? '<span class="badge b-green">OK</span>' : '<span class="badge b-red">off</span>'}</td>
+      <td>${peerStatus(p) === 'active'
+        ? '<span class="badge b-green">active</span>'
+        : peerStatus(p) === 'stale'
+          ? '<span class="badge b-yellow">stale</span>'
+          : '<span class="badge b-red">never</span>'}</td>
     </tr>`;
 
   el('dash-vpn-body').innerHTML = peers.slice(0, 8).map(vpnRow).join('');
@@ -524,7 +535,11 @@ async function fetchVPN() {
       <td class="${hsClass(p.last_handshake)}">${p.last_handshake || '—'}</td>
       <td style="color:var(--green)">${fmtB(p.rx_bytes)}</td>
       <td style="color:var(--accent)">${fmtB(p.tx_bytes)}</td>
-      <td>${isPeerOnline(p) ? '<span class="badge b-green">connected</span>' : '<span class="badge b-red">offline</span>'}</td>
+      <td>${peerStatus(p) === 'active'
+        ? '<span class="badge b-green">active</span>'
+        : peerStatus(p) === 'stale'
+          ? '<span class="badge b-yellow">stale</span>'
+          : '<span class="badge b-red">never</span>'}</td>
     </tr>`).join('');
   enableDnD('vpn-tbody', 'tr', true);
 }
@@ -819,8 +834,15 @@ window.addEventListener('hashchange', () => {
   const page = (location.hash || '').replace(/^#/, '').trim();
   if (pages[page]) navigate(page);
 });
-el('logs-filter')?.addEventListener('input', () => { if (currentPage === 'logs') refresh(); });
-el('dhcp-search')?.addEventListener('input', () => { if (currentPage === 'dhcp') refresh(); });
+const debounce = (fn, ms) => {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+};
+el('logs-filter')?.addEventListener('input', debounce(() => { if (currentPage === 'logs') refresh(); }, 250));
+el('dhcp-search')?.addEventListener('input', debounce(() => { if (currentPage === 'dhcp') refresh(); }, 250));
 el('iface-filter')?.addEventListener('change', () => { if (currentPage === 'interfaces') refresh(); });
 checkAuth().then(ok => { if (ok) refresh(); });
 setInterval(() => {

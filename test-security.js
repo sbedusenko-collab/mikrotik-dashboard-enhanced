@@ -35,10 +35,18 @@ assertEq(buildUiUrl({ page: 'dashboard', host: '127.0.0.1', port: 8080, sslEnabl
 assertEq(buildUiUrl({ page: 'logs', host: 'router.local', port: 8443, sslEnabled: true }), 'https://router.local:8443#logs', 'buildUiUrl hash page');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mikro-env-'));
-fs.writeFileSync(path.join(tmpDir, '.env'), 'TEST_ENV_KEY=ok-value\n');
+fs.writeFileSync(path.join(tmpDir, '.env'), [
+  'TEST_ENV_KEY=ok-value',
+  'TEST_ENV_QUOTED="value with # hash and spaces"',
+  'TEST_ENV_COMMENT=abc # trailing comment',
+].join('\n') + '\n');
 delete process.env.TEST_ENV_KEY;
+delete process.env.TEST_ENV_QUOTED;
+delete process.env.TEST_ENV_COMMENT;
 loadEnvOnce(tmpDir);
 assertEq(process.env.TEST_ENV_KEY, 'ok-value', 'loadEnvOnce reads .env');
+assertEq(process.env.TEST_ENV_QUOTED, 'value with # hash and spaces', 'loadEnvOnce reads quoted values');
+assertEq(process.env.TEST_ENV_COMMENT, 'abc', 'loadEnvOnce strips inline comment for unquoted values');
 
 const serverJs = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 assert(serverJs.includes("'/api/system'"), 'server route map includes /api/system');
