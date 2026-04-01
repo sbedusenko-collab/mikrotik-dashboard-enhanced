@@ -445,7 +445,7 @@ const ROUTES = {
   '/api/routes':     withShortCache('routes', apiRoutes),
   '/api/logs':       apiLogs,
   '/api/report':     apiReport,
-  '/api/health-summary': withShortCache('health-summary', apiHealthSummary),
+  '/api/health-summary': apiHealthSummary,
 };
 
 function setSecurityHeaders(res) {
@@ -508,7 +508,7 @@ const requestHandler = async (req, res) => {
       try {
         const { token } = JSON.parse(body);
         if (token === CFG.auth) {
-          const session = createSession(getClientIp(req));
+          const session = createSession();
           const cookieFlags = [
             `session=${session}`,
             'HttpOnly',
@@ -614,7 +614,7 @@ if (sslKey && sslCert) {
 server.on('upgrade', (req, socket) => {
   if (CFG.auth) {
     const cookies = parseCookies(req);
-    if (!validateSession(cookies.session, getClientIp(req))) {
+    if (!validateSession(cookies.session)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

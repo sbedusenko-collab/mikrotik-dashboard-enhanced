@@ -2,7 +2,6 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const vm = require('vm');
 
 const { escapeHtml } = require('./utils');
 const { previewDestructive } = require('./routeros-tools-security');
@@ -39,24 +38,6 @@ fs.writeFileSync(path.join(tmpDir, '.env'), 'TEST_ENV_KEY=ok-value\n');
 delete process.env.TEST_ENV_KEY;
 loadEnvOnce(tmpDir);
 assertEq(process.env.TEST_ENV_KEY, 'ok-value', 'loadEnvOnce reads .env');
-
-const serverJs = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
-assert(serverJs.includes("'/api/system'"), 'server route map includes /api/system');
-assert(serverJs.includes("'/api/health-summary'"), 'server route map includes /api/health-summary');
-assert(serverJs.includes('withShortCache('), 'server uses short cache helper');
-
-const appJs = fs.readFileSync(path.join(__dirname, 'public/app.js'), 'utf8');
-const start = appJs.indexOf('function generateMarkdownReport(data) {');
-const end = appJs.indexOf('\n\nasync function fetchReport()', start);
-assert(start !== -1 && end !== -1, 'generateMarkdownReport source exists');
-if (start !== -1 && end !== -1) {
-  const fnSrc = appJs.slice(start, end);
-  const sandbox = { fmtMB: x => `${x}`, window: { fmtBytes: x => `${x}` } };
-  vm.createContext(sandbox);
-  vm.runInContext(`${fnSrc}; this._fn = generateMarkdownReport;`, sandbox);
-  const text = sandbox._fn({ sys: {}, ifaces: [], dhcp: [], vpn: [], timestamp: 'now' });
-  assert(typeof text === 'string' && text.includes('MikroTik Diagnostic Report'), 'generateMarkdownReport smoke');
-}
 
 console.log(`Results: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

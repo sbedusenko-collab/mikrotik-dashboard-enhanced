@@ -199,7 +199,6 @@ const API = '';
 const CIRC = 2 * Math.PI * 40; // 251
 let refreshAbortController = null;
 let activeRefreshSignal = null;
-const lastFetchAt = {};
 
 // ════════════════════════════════════════════════
 // Helpers
@@ -400,7 +399,7 @@ async function fetchInterfaces() {
   });
 
   // Update known interfaces for tabs
-  const names = list.filter(i => !i.disabled).map(i => i.name);
+  const names = visible.filter(i => !i.disabled).map(i => i.name);
   if (JSON.stringify(names) !== JSON.stringify(knownIfaceNames)) {
     knownIfaceNames = names;
     buildTabs('dash-tabs', dashChart, 'dash-iface-label');
@@ -603,21 +602,6 @@ async function fetchHealthSummary() {
     el('alert-banner').classList.remove('hidden');
     el('alert-text').textContent = health.alerts.join('; ');
   }
-  el('health-sensors').innerHTML = `
-    <tr><td style="color:var(--muted)">Reachable</td><td>${health.reachable ? 'yes' : 'no'}</td></tr>
-    <tr><td style="color:var(--muted)">Severity</td><td>${escapeHtml(health.severity || 'unknown')}</td></tr>
-    <tr><td style="color:var(--muted)">Alerts</td><td>${escapeHtml((health.alerts || []).join('; ') || 'none')}</td></tr>
-    <tr><td style="color:var(--muted)">Updated</td><td>${escapeHtml(health.timestamp || new Date().toISOString())}</td></tr>
-  `;
-}
-
-function due(key, intervalMs) {
-  const now = Date.now();
-  if (!lastFetchAt[key] || now - lastFetchAt[key] >= intervalMs) {
-    lastFetchAt[key] = now;
-    return true;
-  }
-  return false;
 }
 
 // ════════════════════════════════════════════════
@@ -709,20 +693,14 @@ async function refresh() {
   refreshAbortController = new AbortController();
   activeRefreshSignal = refreshAbortController.signal;
   const tasks = [fetchSystem(), fetchTraffic()];
-  if (currentPage === 'interfaces' && due('interfaces', 6000)) tasks.push(fetchInterfaces());
-  if (currentPage === 'dhcp' && due('dhcp', 15000)) tasks.push(fetchDHCP());
-  if (currentPage === 'vpn' && due('vpn', 6000)) tasks.push(fetchVPN());
-  if (currentPage === 'routes' && due('routes', 15000)) tasks.push(fetchRoutes());
+  if (currentPage === 'interfaces') tasks.push(fetchInterfaces());
+  if (currentPage === 'dhcp') tasks.push(fetchDHCP());
+  if (currentPage === 'vpn') tasks.push(fetchVPN());
+  if (currentPage === 'routes') tasks.push(fetchRoutes());
   if (currentPage === 'logs') tasks.push(fetchLogs());
   if (currentPage === 'report') tasks.push(fetchReport());
-  if (currentPage === 'health' && due('health-summary', 3000)) tasks.push(fetchHealthSummary());
-  if (currentPage === 'dashboard') {
-    if (due('interfaces', 6000)) tasks.push(fetchInterfaces());
-    if (due('vpn', 6000)) tasks.push(fetchVPN());
-    if (due('dhcp', 15000)) tasks.push(fetchDHCP());
-    if (due('routes', 15000)) tasks.push(fetchRoutes());
-    if (due('health-summary', 3000)) tasks.push(fetchHealthSummary());
-  }
+  if (currentPage === 'health') tasks.push(fetchHealthSummary());
+  if (currentPage === 'dashboard') tasks.push(fetchInterfaces(), fetchDHCP(), fetchVPN(), fetchRoutes(), fetchHealthSummary());
 
   const results = await Promise.allSettled(tasks);
   if (activeRefreshSignal?.aborted) return;
