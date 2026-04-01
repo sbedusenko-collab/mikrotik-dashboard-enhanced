@@ -604,7 +604,7 @@ const listenHost = process.env.HOST || '127.0.0.1';
 server.listen(CFG.port, listenHost, () => {
   const protocol = (sslKey && sslCert) ? 'https' : 'http';
   const routerProto = CFG.routerTls ? 'https' : 'http';
-  console.log(`✓ MikroTik Dashboard: ${protocol}://${listenHost}:${CFG.port}`);
+  console.log(`✓ MikroTik Dashboard: ${protocol}://127.0.0.1:${CFG.port}`);
   console.log(`✓ RouterOS REST target: ${routerProto}://${CFG.host}:${CFG.routerPort}/rest`);
 });
 

@@ -360,10 +360,10 @@ async function fetchSystem() {
 
   // Settings page
   el('settings-info').innerHTML = `
-    <tr><td style="color:var(--muted)">Роутер</td><td>${escapeHtml(d.identity)}</td></tr>
-    <tr><td style="color:var(--muted)">Модель</td><td>${escapeHtml(d.board)}</td></tr>
-    <tr><td style="color:var(--muted)">RouterOS</td><td>${escapeHtml(d.version)}</td></tr>
-    <tr><td style="color:var(--muted)">Uptime</td><td>${escapeHtml(d.uptime)}</td></tr>
+    <tr><td style="color:var(--muted)">Роутер</td><td>${d.identity}</td></tr>
+    <tr><td style="color:var(--muted)">Модель</td><td>${d.board}</td></tr>
+    <tr><td style="color:var(--muted)">RouterOS</td><td>${d.version}</td></tr>
+    <tr><td style="color:var(--muted)">Uptime</td><td>${d.uptime}</td></tr>
     <tr><td style="color:var(--muted)">API URL</td><td>${API}</td></tr>
   `;
 
@@ -379,7 +379,7 @@ async function fetchSystem() {
           <span style="color:var(--muted);font-size:11px;margin-left:6px">${fmtMB(d.total_hdd-d.free_hdd)} / ${fmtMB(d.total_hdd)}</span></td></tr>
     <tr><td style="color:var(--muted)">Температура CPU</td>
       <td>${d.temperature != null ? `<span class="badge ${d.temperature>70?'b-red':d.temperature>55?'b-yellow':'b-green'}">${d.temperature}°C</span>` : '—'}</td></tr>
-    <tr><td style="color:var(--muted)">Uptime</td><td>${escapeHtml(d.uptime)}</td></tr>
+    <tr><td style="color:var(--muted)">Uptime</td><td>${d.uptime}</td></tr>
   `;
 }
 
@@ -460,8 +460,8 @@ async function fetchVPN() {
 
   const vpnRow = p => `
     <tr>
-      <td style="font-size:11px;font-family:monospace">${escapeHtml((p.allowed || '').replace('/32','').replace(',::/0',''))}</td>
-      <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${escapeHtml(p.last_handshake || '—')}</td>
+      <td style="font-size:11px;font-family:monospace">${p.allowed.replace('/32','').replace(',::/0','')}</td>
+      <td class="${hsClass(p.last_handshake)}" style="font-size:11px">${p.last_handshake || '—'}</td>
       <td style="color:var(--green);font-size:11px">${fmtB(p.rx_bytes)}</td>
       <td style="color:var(--accent);font-size:11px">${fmtB(p.tx_bytes)}</td>
       <td>${p.connected ? '<span class="badge b-green">OK</span>' : '<span class="badge b-red">off</span>'}</td>
@@ -509,9 +509,9 @@ async function fetchRoutes() {
   const list = await fetch(`${API}/api/routes`).then(r => r.json());
   el('routes-tbody').innerHTML = list.map(r => `
     <tr>
-      <td style="font-family:monospace">${escapeHtml(r.dst)}</td>
-      <td style="font-family:monospace">${escapeHtml(r.gateway || '—')}</td>
-      <td style="color:var(--muted)">${escapeHtml(r.iface || '—')}</td>
+      <td style="font-family:monospace">${r.dst}</td>
+      <td style="font-family:monospace">${r.gateway || '—'}</td>
+      <td style="color:var(--muted)">${r.iface || '—'}</td>
       <td style="color:var(--muted)">${r.distance}</td>
     </tr>`).join('');
 }
@@ -539,19 +539,19 @@ function generateMarkdownReport(data) {
   const fmtB = window.fmtBytes;
   let md = `# MikroTik Diagnostic Report\n*Generated at: ${timestamp}*\n\n`;
   
-  md += `## 1. System Info\n- **Identity**: ${sys.identity}\n- **RouterOS**: ${sys.version}\n- **Board**: ${sys.board}\n- **Uptime**: ${sys.uptime}\n`;
+  md += `## 1. System Info\n- **Identity**: ${escapeHtml(sys.identity)}\n- **RouterOS**: ${escapeHtml(sys.version)}\n- **Board**: ${escapeHtml(sys.board)}\n- **Uptime**: ${escapeHtml(sys.uptime)}\n`;
   md += `- **CPU**: ${sys.cpu_load}%\n- **Memory**: ${fmtMB(sys.total_memory - sys.free_memory)} / ${fmtMB(sys.total_memory)} USED\n- **Storage**: ${fmtMB(sys.total_hdd - sys.free_hdd)} / ${fmtMB(sys.total_hdd)} USED\n\n`;
   
   md += `## 2. Interfaces\n`;
   ifaces.forEach(i => {
-    md += `- **${i.name}** (${i.type}): ${i.running ? 'UP' : 'DOWN'}${i.disabled ? ' [DISABLED]' : ''} | RX: ${fmtB(i.rx_bytes)} | TX: ${fmtB(i.tx_bytes)}\n`;
+    md += `- **${escapeHtml(i.name)}** (${escapeHtml(i.type)}): ${i.running ? 'UP' : 'DOWN'}${i.disabled ? ' [DISABLED]' : ''} | RX: ${fmtB(i.rx_bytes)} | TX: ${fmtB(i.tx_bytes)}\n`;
   });
   
   md += `\n## 3. DHCP Leases (${dhcp.length})\n`;
-  dhcp.forEach(l => md += `- ${l.address} [${l.mac}] ${l.hostname || 'Unknown'} (${l.status})\n`);
+  dhcp.forEach(l => md += `- ${escapeHtml(l.address)} [${escapeHtml(l.mac)}] ${escapeHtml(l.hostname || 'Unknown')} (${escapeHtml(l.status)})\n`);
   
   md += `\n## 4. VPN Peers (${vpn.length})\n`;
-  vpn.forEach(p => md += `- ${p.name} -> ${p.allowed} | Handshake: ${p.last_handshake || 'Never'} | RX: ${fmtB(p.rx_bytes)} | TX: ${fmtB(p.tx_bytes)}\n`);
+  vpn.forEach(p => md += `- ${escapeHtml(p.name)} -> ${escapeHtml(p.allowed)} | Handshake: ${escapeHtml(p.last_handshake || 'Never')} | RX: ${fmtB(p.rx_bytes)} | TX: ${fmtB(p.tx_bytes)}\n`);
   
   return md;
 }
@@ -559,26 +559,6 @@ function generateMarkdownReport(data) {
 async function fetchReport() {
   const data = await fetch(`${API}/api/report`).then(r => r.json());
   el('report-content').textContent = generateMarkdownReport(data);
-}
-
-async function fetchHealthSummary() {
-  const health = await fetch(`${API}/api/health-summary`).then(r => r.json());
-  if (!health || !health.checks) return;
-
-  const checks = health.checks;
-  const badgeCls = s => s === 'critical' ? 'b-red' : s === 'warning' ? 'b-yellow' : 'b-green';
-  const val = v => (v == null ? '—' : escapeHtml(v));
-  el('health-sys').innerHTML = `
-    <tr><td style="color:var(--muted)">CPU</td><td><span class="badge ${badgeCls(checks.cpu.status)}">${checks.cpu.status}</span> <span style="margin-left:6px">${val(checks.cpu.value)}%</span></td></tr>
-    <tr><td style="color:var(--muted)">Memory</td><td><span class="badge ${badgeCls(checks.memory.status)}">${checks.memory.status}</span> <span style="margin-left:6px">${val(checks.memory.value)}%</span></td></tr>
-    <tr><td style="color:var(--muted)">Disk</td><td><span class="badge ${badgeCls(checks.disk.status)}">${checks.disk.status}</span> <span style="margin-left:6px">${val(checks.disk.value)}%</span></td></tr>
-    <tr><td style="color:var(--muted)">Temp</td><td><span class="badge ${badgeCls(checks.temp.status)}">${checks.temp.status}</span> <span style="margin-left:6px">${val(checks.temp.value)}${checks.temp.value == null ? '' : '°C'}</span></td></tr>
-  `;
-
-  if (Array.isArray(health.alerts) && health.alerts.length) {
-    el('alert-banner').classList.remove('hidden');
-    el('alert-text').textContent = health.alerts.join('; ');
-  }
 }
 
 // ════════════════════════════════════════════════
@@ -673,8 +653,7 @@ async function refresh() {
   if (currentPage === 'routes') tasks.push(fetchRoutes());
   if (currentPage === 'logs') tasks.push(fetchLogs());
   if (currentPage === 'report') tasks.push(fetchReport());
-  if (currentPage === 'health') tasks.push(fetchHealthSummary());
-  if (currentPage === 'dashboard') tasks.push(fetchInterfaces(), fetchDHCP(), fetchVPN(), fetchRoutes(), fetchHealthSummary());
+  if (currentPage === 'dashboard' || currentPage === 'health') tasks.push(fetchInterfaces(), fetchDHCP(), fetchVPN(), fetchRoutes());
 
   const results = await Promise.allSettled(tasks);
   const failed = results.filter(r => r.status === 'rejected');
