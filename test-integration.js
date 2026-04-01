@@ -46,7 +46,22 @@ async function run() {
   if (r6.body.includes('MikroTik Dashboard')) { passed++; console.log('✓ Path traversal blocked (SPA fallback)'); }
   else { failed++; console.log('✗ Path traversal blocked'); }
 
-  // Test 7: Rate limiting
+  // Test 7: Dotfile access must be blocked
+  const r7 = await req('/.env');
+  if (r7.status === 403) { passed++; console.log('✓ Dotfile access blocked'); }
+  else { failed++; console.log('✗ Dotfile access blocked'); }
+
+  // Test 8: Health summary endpoint
+  const r8 = await req('/api/health-summary');
+  let healthOk = false;
+  try {
+    const payload = JSON.parse(r8.body);
+    healthOk = r8.status === 200 && typeof payload.reachable === 'boolean' && typeof payload.severity === 'string';
+  } catch (_) {}
+  if (healthOk) { passed++; console.log('✓ Health summary endpoint'); }
+  else { failed++; console.log('✗ Health summary endpoint'); }
+
+  // Test 9: Rate limiting
   let rateLimited = false;
   const requests = [];
   for (let i = 0; i < 130; i++) {
