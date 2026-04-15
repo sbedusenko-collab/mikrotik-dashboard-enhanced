@@ -12,7 +12,7 @@
     "test": "node test.js",
     "test:security": "node test-security.js",
     "test:all": "npm run test && npm run test:security && node test-integration.js",
-    "lint": "node --check server.js && node --check mcp-server.js && node --check utils.js && node --check config.js && node --check routeros-client.js && node --check routeros-tools-mcp.js && node --check routeros-tools-security.js && node --check routeros-tools-network.js && node --check routeros-tools-system.js && node --check test.js && node --check test-security.js && node --check test-integration.js",
+    "lint": "find . -maxdepth 1 -name '*.js' -exec node --check {} +",
     "dev": "node server.js"
   },
   "keywords": [
