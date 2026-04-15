@@ -5,6 +5,7 @@
  */
 
 const { createAsserts } = require('./test-helpers');
+const { fmtBytes, fmtRate } = require('./utils');
 const { assert, assertEq, stats } = createAsserts();
 let caseFailures = 0;
 
@@ -13,7 +14,7 @@ function test(name, fn) {
   catch(e) { caseFailures++; console.error(`  ✗ ${name}: ${e.message}`); }
 }
 
-// ── Helpers (inline copies to test logic without requiring server.js) ──────────
+// ── Helpers (test local logic without requiring server.js) ─────────────────────
 
 function parseCookies(header) {
   const cookies = {};
@@ -22,28 +23,6 @@ function parseCookies(header) {
     if (k) cookies[k.trim()] = rest.join('=');
   });
   return cookies;
-}
-
-function fmtBytes(b) {
-  b = Number(b) || 0;
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let i = 0;
-  while (Math.abs(b) >= 1024 && i < units.length - 1) {
-    b /= 1024;
-    i++;
-  }
-  return `${b.toFixed(i === 0 ? 0 : i < 2 ? 1 : 2)} ${units[i]}`;
-}
-
-function fmtRate(b) {
-  b = Number(b) || 0;
-  const units = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s'];
-  let i = 0;
-  while (Math.abs(b) >= 1024 && i < units.length - 1) {
-    b /= 1024;
-    i++;
-  }
-  return `${b.toFixed(i === 0 ? 0 : i < 2 ? 1 : 2)} ${units[i]}`;
 }
 
 function table(rows, headers) {
